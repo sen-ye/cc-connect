@@ -6160,9 +6160,17 @@ func extractToolDetailFromJSON(text string, desc toolDescriptor) string {
 	if text == "" || len(desc.ParamKeys) == 0 {
 		return ""
 	}
+	// Shell scripts often contain JSON later on (`--jq '{...}'`, python
+	// dicts). Only treat a command as structured input when the whole
+	// payload is a JSON object.
+	if desc.Sanitizer == toolSanitizerCommand && !strings.HasPrefix(text, "{") {
+		return ""
+	}
 	candidates := []string{text}
-	if idx := strings.Index(text, "{"); idx > 0 {
-		candidates = append(candidates, text[idx:])
+	if desc.Sanitizer != toolSanitizerCommand {
+		if idx := strings.Index(text, "{"); idx > 0 {
+			candidates = append(candidates, text[idx:])
+		}
 	}
 	for _, candidate := range candidates {
 		var params map[string]any
@@ -6227,6 +6235,12 @@ func extractToolDetailFromSummary(text string, desc toolDescriptor) string {
 				return strings.TrimSpace(match[1])
 			}
 		}
+		// Commands are already the payload. The first quoted token is
+		// usually a heredoc delimiter or flag argument (`<<'PY'`,
+		// `sed -n '90,170p'`), not the command itself.
+		if desc.Sanitizer == toolSanitizerCommand {
+			return ""
+		}
 		if code := extractFirstCodeSpan(line); code != "" {
 			return code
 		}
@@ -6253,6 +6267,7 @@ var (
 	firstQuotedTextRe = regexp.MustCompile(`"([^"]+)"|'([^']+)'`)
 	secretAssignRe    = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*(?:token|secret|password|api[_-]?key|authorization|cookie|credential|bearer|session[_-]?id|client[_-]?secret|access[_-]?key)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s"'` + "`" + `]+)`)
 	authHeaderRe      = regexp.MustCompile(`(?i)(Authorization\s*:\s*(?:Bearer|Basic|Token)\s+)([^\s'"` + "`" + `]+)`)
+	emailAddrRe       = regexp.MustCompile(`(?i)\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
 	sensitiveNameRe   = regexp.MustCompile(`(?i)(token|secret|password|api[_-]?key|authorization|cookie|credential|bearer|session[_-]?id|client[_-]?secret|access[_-]?key)`)
 )
 
@@ -6340,13 +6355,18 @@ func sanitizeURLText(value string) string {
 
 func sanitizeCommandLike(value string) string {
 	value = strings.TrimSpace(stripToolDisplayQuotes(value))
-	value = regexp.MustCompile(`(?i)^(?:command|script|description)\s+`).ReplaceAllString(value, "")
+	// Only strip labeled leftovers (`command: ls`), not the shell builtin
+	// `command -v gh`.
+	value = regexp.MustCompile(`(?i)^(?:command|script|description)\s*[:=]\s*`).ReplaceAllString(value, "")
 	return redactInlineSecrets(value)
 }
 
 func redactInlineSecrets(value string) string {
 	value = secretAssignRe.ReplaceAllString(value, "$1=[redacted]")
 	value = authHeaderRe.ReplaceAllString(value, "$1[redacted]")
+	// Feishu card audit rejects EMAIL_ADDRESS (230028). Tool cards that
+	// echo a command or write-up containing an inbox must not keep it.
+	value = emailAddrRe.ReplaceAllString(value, "[email]")
 	return value
 }
 
