@@ -401,6 +401,212 @@ var _ interface {
 	GetContextUsage() *core.ContextUsage
 } = (*appServerSession)(nil)
 
+func TestAppServerSession_IgnoresSubagentIdle(t *testing.T) {
+	s := &appServerSession{
+		events: make(chan core.Event, 8),
+	}
+	s.threadID.Store("parent-thread")
+	s.stateMu.Lock()
+	s.currentTurn = "parent-turn"
+	s.stateMu.Unlock()
+
+	s.handleNotification("thread/status/changed", json.RawMessage(`{
+		"threadId": "child-thread",
+		"status": {"type": "idle"}
+	}`))
+
+	select {
+	case ev := <-s.events:
+		t.Fatalf("unexpected event from child idle: %#v", ev)
+	default:
+	}
+	if s.currentTurn != "parent-turn" {
+		t.Fatalf("currentTurn = %q, want parent-turn", s.currentTurn)
+	}
+
+	s.handleNotification("thread/status/changed", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"status": {"type": "idle"}
+	}`))
+
+	ev := <-s.events
+	if ev.Type != core.EventResult || !ev.Done {
+		t.Fatalf("parent idle event = %#v, want EventResult Done", ev)
+	}
+	if s.currentTurn != "" {
+		t.Fatalf("currentTurn after parent idle = %q, want empty", s.currentTurn)
+	}
+}
+
+func TestAppServerSession_IgnoresSubagentTurnStarted(t *testing.T) {
+	s := &appServerSession{
+		events: make(chan core.Event, 8),
+	}
+	s.threadID.Store("parent-thread")
+	s.stateMu.Lock()
+	s.currentTurn = "parent-turn"
+	s.stateMu.Unlock()
+
+	s.handleNotification("turn/started", json.RawMessage(`{
+		"threadId": "child-thread",
+		"turn": {"id": "child-turn", "status": "inProgress"}
+	}`))
+
+	if s.currentTurn != "parent-turn" {
+		t.Fatalf("currentTurn overwritten by child turn/started: %q", s.currentTurn)
+	}
+
+	s.handleNotification("turn/completed", json.RawMessage(`{
+		"threadId": "child-thread",
+		"turn": {"id": "child-turn", "status": "completed"}
+	}`))
+
+	select {
+	case ev := <-s.events:
+		t.Fatalf("unexpected event from child turn/completed: %#v", ev)
+	default:
+	}
+	if s.currentTurn != "parent-turn" {
+		t.Fatalf("currentTurn = %q, want parent-turn", s.currentTurn)
+	}
+}
+
+func TestAppServerSession_AgentMessageEmitsTextImmediately(t *testing.T) {
+	s := &appServerSession{
+		events: make(chan core.Event, 8),
+	}
+	s.threadID.Store("parent-thread")
+	s.stateMu.Lock()
+	s.currentTurn = "parent-turn"
+	s.stateMu.Unlock()
+
+	s.handleNotification("item/completed", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turnId": "parent-turn",
+		"item": {
+			"type": "agentMessage",
+			"content": [{"type": "text", "text": "进度：Godot 还在跑"}]
+		}
+	}`))
+
+	ev := <-s.events
+	if ev.Type != core.EventText || ev.Content != "进度：Godot 还在跑" {
+		t.Fatalf("event = %#v, want EventText with commentary", ev)
+	}
+	if len(s.pendingMsgs) != 0 {
+		t.Fatalf("pendingMsgs = %#v, want empty after immediate emit", s.pendingMsgs)
+	}
+}
+
+func TestAppServerCommandText_ArgvBash(t *testing.T) {
+	got := appServerCommandText(map[string]any{
+		"command": []any{"/bin/bash", "-lc", "pwd"},
+	})
+	if got != "pwd" {
+		t.Fatalf("argv bash -lc = %q, want pwd", got)
+	}
+
+	got = appServerCommandText(map[string]any{
+		"command": "echo hi",
+	})
+	if got != "echo hi" {
+		t.Fatalf("string command = %q, want echo hi", got)
+	}
+
+	got = appServerCommandText(map[string]any{
+		"parsed_cmd": []any{map[string]any{"type": "unknown", "cmd": "rg --files"}},
+	})
+	if got != "rg --files" {
+		t.Fatalf("parsed_cmd = %q, want rg --files", got)
+	}
+}
+
+func TestAppServerSession_LegacyStringCommandUnchanged(t *testing.T) {
+	s := &appServerSession{
+		events: make(chan core.Event, 8),
+	}
+	s.threadID.Store("parent-thread")
+	s.stateMu.Lock()
+	s.currentTurn = "parent-turn"
+	s.stateMu.Unlock()
+
+	s.handleNotification("item/started", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turnId": "parent-turn",
+		"item": {"type": "commandExecution", "command": "ls -la"}
+	}`))
+	ev := <-s.events
+	if ev.Type != core.EventToolUse || ev.ToolName != "Bash" || ev.ToolInput != "ls -la" {
+		t.Fatalf("legacy started = %#v, want Bash ls -la", ev)
+	}
+
+	s.handleNotification("item/completed", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turnId": "parent-turn",
+		"item": {
+			"type": "commandExecution",
+			"command": "ls -la",
+			"aggregatedOutput": "ok\n",
+			"exitCode": 0,
+			"status": "completed"
+		}
+	}`))
+	ev = <-s.events
+	if ev.Type != core.EventToolResult || ev.ToolName != "Bash" || ev.ToolInput != "ls -la" || ev.ToolResult != "ok" {
+		t.Fatalf("legacy completed = %#v, want Bash ls -la / ok", ev)
+	}
+}
+
+func TestAppServerSession_CommandExecutionArgvEmitsToolInput(t *testing.T) {
+	s := &appServerSession{
+		events: make(chan core.Event, 8),
+	}
+	s.threadID.Store("parent-thread")
+	s.stateMu.Lock()
+	s.currentTurn = "parent-turn"
+	s.stateMu.Unlock()
+
+	s.handleNotification("item/started", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turnId": "parent-turn",
+		"item": {
+			"type": "CommandExecution",
+			"command": ["/bin/bash", "-lc", "pwd"]
+		}
+	}`))
+	ev := <-s.events
+	if ev.Type != core.EventToolUse || ev.ToolName != "Bash" || ev.ToolInput != "pwd" {
+		t.Fatalf("started = %#v, want Bash pwd", ev)
+	}
+
+	s.handleNotification("item/completed", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turnId": "parent-turn",
+		"item": {
+			"type": "CommandExecution",
+			"command": ["/bin/bash", "-lc", "pwd"],
+			"aggregated_output": "/tmp\n",
+			"exit_code": 0,
+			"status": "completed"
+		}
+	}`))
+	ev = <-s.events
+	if ev.Type != core.EventToolResult || ev.ToolInput != "pwd" || ev.ToolResult != "/tmp" {
+		t.Fatalf("completed = %#v, want Bash result /tmp", ev)
+	}
+}
+
+func TestAppServerAgentMessageText(t *testing.T) {
+	if got := appServerAgentMessageText(map[string]any{"text": "hello"}); got != "hello" {
+		t.Fatalf("text field = %q, want hello", got)
+	}
+	if got := appServerAgentMessageText(map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "from content"}},
+	}); got != "from content" {
+		t.Fatalf("content field = %q, want from content", got)
+	}
+}
+
 type lockedWriteCloser struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

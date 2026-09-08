@@ -1099,11 +1099,48 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 	}
 }
 
+func (s *appServerSession) acceptsThreadNotification(method, threadID string) bool {
+	currentThreadID := s.CurrentSessionID()
+	if threadID == "" || currentThreadID == "" || threadID == currentThreadID {
+		return true
+	}
+	slog.Debug("codex app-server: ignoring notification for another thread",
+		"method", method, "thread_id", threadID, "current_thread_id", currentThreadID)
+	return false
+}
+
+func (s *appServerSession) acceptsTurnNotification(method, threadID, turnID string) bool {
+	if !s.acceptsThreadNotification(method, threadID) {
+		return false
+	}
+	if turnID == "" {
+		return true
+	}
+	s.stateMu.Lock()
+	currentTurn := s.currentTurn
+	s.stateMu.Unlock()
+	if currentTurn == "" || turnID == currentTurn {
+		return true
+	}
+	slog.Debug("codex app-server: ignoring notification for another turn",
+		"method", method, "turn_id", turnID, "current_turn_id", currentTurn)
+	return false
+}
+
+func (s *appServerSession) hasPendingApprovals() bool {
+	s.approvalsMu.Lock()
+	defer s.approvalsMu.Unlock()
+	return len(s.pendingApprovals) > 0
+}
+
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
 	switch method {
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if !s.acceptsThreadNotification(method, notif.ThreadID) {
+				return
+			}
 			s.stateMu.Lock()
 			s.currentTurn = notif.Turn.ID
 			s.pendingMsgs = s.pendingMsgs[:0]
@@ -1114,18 +1151,27 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "item/started":
 		var notif itemNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if !s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) {
+				return
+			}
 			s.handleItemStarted(notif.Item)
 		}
 
 	case "item/completed":
 		var notif itemNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if !s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) {
+				return
+			}
 			s.handleItemCompleted(notif.Item)
 		}
 
 	case "turn/completed":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if !s.acceptsTurnNotification(method, notif.ThreadID, notif.Turn.ID) {
+				return
+			}
 			if strings.EqualFold(strings.TrimSpace(notif.Turn.Status), "failed") || notif.Turn.Error != nil {
 				errMsg := ""
 				if notif.Turn.Error != nil {
@@ -1148,7 +1194,14 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 			} `json:"status"`
 		}
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" {
-			// In codex 0.125+, thread going idle signals turn completion.
+			if !s.acceptsThreadNotification(method, notif.ThreadID) {
+				return
+			}
+			if s.hasPendingApprovals() {
+				slog.Debug("codex app-server: deferring idle completion while approvals pending")
+				return
+			}
+			// In codex 0.125+, parent-thread idle signals turn completion.
 			s.completeTurn()
 		}
 
@@ -1173,7 +1226,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 }
 
 func (s *appServerSession) handleItemStarted(item map[string]any) {
-	itemType, _ := item["type"].(string)
+	itemType := appServerItemType(item)
 	if itemType == "" {
 		return
 	}
@@ -1187,8 +1240,7 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 
 	switch itemType {
 	case "commandExecution":
-		command, _ := item["command"].(string)
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: command})
+		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: appServerCommandText(item)})
 
 	case "mcpToolCall":
 		server, _ := item["server"].(string)
@@ -1210,7 +1262,7 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 }
 
 func (s *appServerSession) handleItemCompleted(item map[string]any) {
-	itemType, _ := item["type"].(string)
+	itemType := appServerItemType(item)
 	if itemType == "" {
 		return
 	}
@@ -1223,18 +1275,16 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 
 	case "agentMessage":
-		text, _ := item["text"].(string)
-		if strings.TrimSpace(text) != "" {
-			s.stateMu.Lock()
-			s.pendingMsgs = append(s.pendingMsgs, text)
-			s.stateMu.Unlock()
+		text := appServerAgentMessageText(item)
+		if text != "" {
+			s.emit(core.Event{Type: core.EventText, Content: text})
 		}
 
 	case "commandExecution":
-		command, _ := item["command"].(string)
+		command := appServerCommandText(item)
 		status, _ := item["status"].(string)
-		output, _ := item["aggregatedOutput"].(string)
-		exitCode, hasExitCode := toInt(item["exitCode"])
+		output := appServerItemString(item, "aggregatedOutput", "aggregated_output", "formatted_output", "formattedOutput")
+		exitCode, hasExitCode := toInt(appServerItemValue(item, "exitCode", "exit_code"))
 		var exitCodePtr *int
 		if hasExitCode {
 			exitCodePtr = &exitCode
@@ -1287,6 +1337,130 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 			ToolSuccess: &success,
 		})
 	}
+}
+
+func appServerItemType(item map[string]any) string {
+	raw, _ := item["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "commandexecution":
+		return "commandExecution"
+	case "agentmessage":
+		return "agentMessage"
+	case "usermessage":
+		return "userMessage"
+	case "mcptoolcall":
+		return "mcpToolCall"
+	case "websearch":
+		return "webSearch"
+	case "dynamictoolcall":
+		return "dynamicToolCall"
+	case "filechange":
+		return "fileChange"
+	case "hookprompt":
+		return "hookPrompt"
+	case "contextcompaction":
+		return "contextCompaction"
+	case "subagentactivity":
+		return "subAgentActivity"
+	default:
+		return raw
+	}
+}
+
+func appServerItemValue(item map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if v, ok := item[key]; ok && v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func appServerItemString(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, ok := item[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func appServerCommandText(item map[string]any) string {
+	switch v := item["command"].(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	case []any:
+		if text := appServerArgvCommandText(v); text != "" {
+			return text
+		}
+	}
+	for _, key := range []string{"parsedCmd", "parsed_cmd"} {
+		parts, ok := item[key].([]any)
+		if !ok {
+			continue
+		}
+		var cmds []string
+		for _, part := range parts {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, _ := m["cmd"].(string); strings.TrimSpace(cmd) != "" {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if len(cmds) > 0 {
+			return strings.Join(cmds, "\n")
+		}
+	}
+	return ""
+}
+
+func appServerArgvCommandText(argv []any) string {
+	parts := make([]string, 0, len(argv))
+	for _, raw := range argv {
+		s, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		parts = append(parts, s)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) >= 3 {
+		base := filepath.Base(parts[0])
+		if (base == "bash" || base == "sh") && (parts[1] == "-c" || parts[1] == "-lc") {
+			return parts[2]
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func appServerAgentMessageText(item map[string]any) string {
+	if text, _ := item["text"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, entry := range content {
+		switch v := entry.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				parts = append(parts, v)
+			}
+		case map[string]any:
+			if text, _ := v["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func appServerReasoningText(item map[string]any) string {
