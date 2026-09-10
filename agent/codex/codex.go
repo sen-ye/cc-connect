@@ -592,10 +592,17 @@ func (a *Agent) SkillDirs() []string {
 
 // ── ContextCompressor implementation ──────────────────────────
 
-// CompressCommand returns "" because Codex native slash commands (/compact, /clear)
-// are not reliably executed in exec/resume mode — they may be treated as plain text.
-// See: https://github.com/chenhg5/cc-connect/issues/378
-func (a *Agent) CompressCommand() string { return "" }
+// CompressCommand is supported by the app-server backend, where the session
+// translates /compact into the native thread/compact/start RPC. Keep it
+// disabled for exec/resume, where slash commands may be treated as plain text.
+func (a *Agent) CompressCommand() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.backend == "app_server" {
+		return "/compact"
+	}
+	return ""
+}
 
 func codexSkillDirs(workDir, explicitCodexHome string) []string {
 	homeDir, _ := os.UserHomeDir()

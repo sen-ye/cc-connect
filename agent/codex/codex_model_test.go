@@ -82,6 +82,25 @@ func TestWorkspaceAgentOptions_PreservesStdIOAppServerURL(t *testing.T) {
 	}
 }
 
+func TestAgent_CompressCommand_AppServerOnly(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    string
+	}{
+		{backend: "app_server", want: "/compact"},
+		{backend: "exec", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.backend, func(t *testing.T) {
+			a := &Agent{backend: tt.backend}
+			if got := a.CompressCommand(); got != tt.want {
+				t.Fatalf("CompressCommand() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsCodexChatModel(t *testing.T) {
 	tests := []struct {
 		id   string

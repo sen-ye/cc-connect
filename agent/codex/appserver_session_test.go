@@ -607,6 +607,56 @@ func TestAppServerAgentMessageText(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_SendCompactUsesNativeRPC(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdin := &lockedWriteCloser{}
+	s := &appServerSession{
+		ctx:     ctx,
+		cancel:  cancel,
+		events:  make(chan core.Event, 2),
+		stdin:   stdin,
+		pending: make(map[int64]chan rpcResponseEnvelope),
+	}
+	s.alive.Store(true)
+	s.threadID.Store("thread-1")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Send("/compact", "", nil, nil)
+	}()
+
+	line := waitForWrittenJSONLine(t, stdin)
+	var req struct {
+		ID     int64          `json:"id"`
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(line), &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if req.Method != "thread/compact/start" {
+		t.Fatalf("method = %q, want thread/compact/start", req.Method)
+	}
+	if got := req.Params["threadId"]; got != "thread-1" {
+		t.Fatalf("threadId = %#v, want thread-1", got)
+	}
+
+	s.handleResponse(rpcResponseEnvelope{
+		ID:     req.ID,
+		Result: json.RawMessage(`{}`),
+	})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Send(/compact) failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send(/compact) did not finish after RPC response")
+	}
+}
+
 type lockedWriteCloser struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

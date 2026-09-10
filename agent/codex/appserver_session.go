@@ -446,6 +446,10 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		return fmt.Errorf("session is closed")
 	}
 
+	if strings.TrimSpace(prompt) == "/compact" {
+		return s.compact()
+	}
+
 	if len(files) > 0 {
 		filePaths := core.SaveFilesToDisk(s.workDir, messageID, files)
 		prompt = core.AppendFileRefs(prompt, filePaths)
@@ -508,6 +512,20 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	s.pendingMsgs = s.pendingMsgs[:0]
 	s.stateMu.Unlock()
 
+	return nil
+}
+
+func (s *appServerSession) compact() error {
+	threadID := s.CurrentSessionID()
+	if threadID == "" {
+		return fmt.Errorf("codex app-server thread id is empty")
+	}
+
+	if err := s.request("thread/compact/start", map[string]any{
+		"threadId": threadID,
+	}, nil); err != nil {
+		return fmt.Errorf("codex app-server thread/compact/start: %w", err)
+	}
 	return nil
 }
 
