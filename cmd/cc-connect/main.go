@@ -464,6 +464,7 @@ func main() {
 				} else {
 					engine.SetWorkspaceIdleTimeout(time.Duration(mins) * time.Minute)
 				}
+				slog.Info("workspace idle timeout configured", "project", proj.Name, "minutes", max(mins, 0))
 			}
 			if proj.SkipGit != nil {
 				engine.SetSkipGit(*proj.SkipGit)

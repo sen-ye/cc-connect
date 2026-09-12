@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -226,6 +227,7 @@ type compactProgressWriter struct {
 	lang       Language
 	truncated  bool
 	lastSent   string
+	lastItems  []ProgressCardEntry // details already accepted by the platform
 	maxEntries int
 
 	// Throttle message edits to avoid platform rate limits (e.g. Discord ~5 edits/5s).
@@ -448,50 +450,10 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		return true
 	}
 
-	if w.handle == nil {
-		if w.starter != nil {
-			callCtx, cancel := w.withAPITimeout()
-			handle, err := w.starter.SendPreviewStart(callCtx, w.replyCtx, w.content)
-			cancel()
-			if err != nil || handle == nil {
-				slog.Warn("progress writer: SendPreviewStart failed", "platform", w.platform.Name(), "style", w.style, "error", err, "handle_nil", handle == nil)
-				w.failed = true
-				return false
-			}
-			w.handle = handle
-			w.lastSent = w.content
-			w.lastUpdateAt = time.Now()
-			return true
-		}
-		callCtx, cancel := w.withAPITimeout()
-		err := w.platform.Send(callCtx, w.replyCtx, w.content)
-		cancel()
-		if err != nil {
-			slog.Warn("progress writer: initial Send failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-			w.failed = true
-			return false
-		}
-		w.handle = w.replyCtx
-		w.lastSent = w.content
-		w.lastUpdateAt = time.Now()
+	if w.handle != nil && w.minUpdateInterval > 0 && time.Since(w.lastUpdateAt) < w.minUpdateInterval {
 		return true
 	}
-
-	if w.minUpdateInterval > 0 && time.Since(w.lastUpdateAt) < w.minUpdateInterval {
-		return true
-	}
-
-	callCtx, cancel := w.withAPITimeout()
-	err := w.updater.UpdateMessage(callCtx, w.handle, w.content)
-	cancel()
-	if err != nil {
-		slog.Warn("progress writer: UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
-		return false
-	}
-	w.lastSent = w.content
-	w.lastUpdateAt = time.Now()
-	return true
+	return w.publish()
 }
 
 // Finalize updates card progress state (running/completed/failed) without
@@ -511,16 +473,87 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	if w.content == "" || w.content == w.lastSent {
 		return w.content != ""
 	}
-	callCtx, cancel := w.withAPITimeout()
-	err := w.updater.UpdateMessage(callCtx, w.handle, w.content)
-	cancel()
+	return w.publish()
+}
+
+// publish preserves progress rendering after a content restriction. Only the
+// unaccepted details are removed; accepted history, tool names and status stay.
+func (w *compactProgressWriter) publish() bool {
+	err := w.sendUpdate()
 	if err != nil {
-		slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
-		return false
+		var rejection ContentRejectedError
+		if !errors.As(err, &rejection) || !rejection.ContentRejected() {
+			slog.Warn("progress writer: publish failed", "platform", w.platform.Name(), "style", w.style, "error", err)
+			w.failed = true
+			return false
+		}
+		slog.Warn("progress writer: content rejected, omitting unaccepted details", "platform", w.platform.Name(), "error", err)
+		w.omitUnacceptedDetails()
+		if err := w.sendUpdate(); err != nil {
+			slog.Warn("progress writer: omitted-details update failed", "platform", w.platform.Name(), "error", err)
+			w.lastUpdateAt = time.Now()
+			// The caller still holds the original details. Returning false
+			// would resend that rejected content as legacy text. Keep the
+			// writer available for subsequent events instead.
+			return true
+		}
 	}
 	w.lastSent = w.content
+	w.lastItems = append(w.lastItems[:0], w.items...)
+	w.lastUpdateAt = time.Now()
 	return true
+}
+
+func (w *compactProgressWriter) sendUpdate() error {
+	ctx, cancel := w.withAPITimeout()
+	defer cancel()
+	if w.handle != nil {
+		return w.updater.UpdateMessage(ctx, w.handle, w.content)
+	}
+	if w.starter != nil {
+		handle, err := w.starter.SendPreviewStart(ctx, w.replyCtx, w.content)
+		if err != nil {
+			return err
+		}
+		if handle == nil {
+			return errors.New("progress preview returned an empty handle")
+		}
+		w.handle = handle
+		return nil
+	}
+	if err := w.platform.Send(ctx, w.replyCtx, w.content); err != nil {
+		return err
+	}
+	w.handle = w.replyCtx
+	return nil
+}
+
+func (w *compactProgressWriter) omitUnacceptedDetails() {
+	notice := NewI18n(w.lang).T(MsgProgressDetailsOmitted)
+	if w.style != progressStyleCard {
+		w.content = notice
+		return
+	}
+	for i, item := range w.items {
+		accepted := false
+		for _, previous := range w.lastItems {
+			if previous == item {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			w.items[i].Text = notice
+			if i < len(w.entries) {
+				w.entries[i] = notice
+			}
+		}
+	}
+	if w.usePayload {
+		w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
+	} else {
+		w.content = trimCompactProgressText(renderCardProgressMarkdownFallback(w.entries, w.truncated), compactProgressMaxChars)
+	}
 }
 
 func (w *compactProgressWriter) withAPITimeout() (context.Context, context.CancelFunc) {

@@ -1969,6 +1969,7 @@ func TestCUJ_I1_RichCardLinkedToPlatformAndIntegration(t *testing.T) {
 // CUJ-I2 · Legacy card mode for backwards-compatibility.
 func TestCUJ_I2_LegacyCardLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I2: covered by release-gate TestCC_CARD_02_legacy")
+	t.Run("ContentRejectionKeepsProgress", testProgressContentRejectionJourney)
 }
 
 // CUJ-I3 · Display modes (quiet/compact/full) each produce expected output.

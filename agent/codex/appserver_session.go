@@ -1296,7 +1296,7 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 		s.emit(core.Event{Type: core.EventToolUse, ToolName: tool, ToolInput: appServerJSON(item["arguments"])})
 
 	case "fileChange":
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Patch", ToolInput: appServerJSON(item["changes"])})
+		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Patch", ToolInput: appServerFileChangePaths(item)})
 	}
 }
 
@@ -1307,6 +1307,13 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 	}
 
 	switch itemType {
+	case "fileChange":
+		paths := appServerFileChangePaths(item)
+		status := appServerItemString(item, "status")
+		success := appServerToolSuccess(status, nil)
+		s.emit(core.Event{Type: core.EventToolResult, ToolName: "Patch", ToolInput: paths,
+			ToolResult: paths, ToolStatus: status, ToolSuccess: &success})
+
 	case "reasoning":
 		text := appServerReasoningText(item)
 		if text != "" {
@@ -1376,6 +1383,26 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 			ToolSuccess: &success,
 		})
 	}
+}
+
+// File changes carry complete diffs, which can be much larger than a chat
+// message and contain nested markdown. Progress only needs the affected paths.
+func appServerFileChangePaths(item map[string]any) string {
+	changes, _ := item["changes"].([]any)
+	var paths []string
+	seen := make(map[string]bool)
+	for _, raw := range changes {
+		change, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		path := strings.TrimSpace(appServerItemString(change, "path"))
+		if path != "" && !seen[path] {
+			paths = append(paths, path)
+			seen[path] = true
+		}
+	}
+	return strings.Join(paths, "\n")
 }
 
 func appServerItemType(item map[string]any) string {

@@ -47,6 +47,13 @@ type Platform interface {
 // ErrNotSupported indicates a platform doesn't support a particular operation.
 var ErrNotSupported = errors.New("operation not supported by this platform")
 
+// ContentRejectedError identifies a platform content restriction. Callers may
+// omit rejected details, but must not resend them through a different format.
+type ContentRejectedError interface {
+	error
+	ContentRejected() bool
+}
+
 // ReplyContextReconstructor is an optional interface for platforms that can
 // recreate a reply context from a session key. This is needed for cron jobs
 // to send messages to users without an incoming message.

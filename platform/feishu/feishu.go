@@ -4114,7 +4114,7 @@ func (p *Platform) replyMessage(ctx context.Context, rc replyContext, msgType, c
 				return fmt.Errorf("%s: reply api call: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: reply failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return p.messageAPIError("reply failed", resp.Code, resp.Msg)
 			}
 			return nil
 		})
@@ -4137,11 +4137,26 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 				return fmt.Errorf("%s: %s api call: %w", p.tag(), op, err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: %s failed code=%d msg=%s", p.tag(), op, resp.Code, resp.Msg)
+				return p.messageAPIError(op+" failed", resp.Code, resp.Msg)
 			}
 			return nil
 		})
 	})
+}
+
+type feishuMessageAPIError struct {
+	platform, operation, message string
+	code                         int
+}
+
+func (e *feishuMessageAPIError) Error() string {
+	return fmt.Sprintf("%s: %s code=%d msg=%s", e.platform, e.operation, e.code, e.message)
+}
+
+func (e *feishuMessageAPIError) ContentRejected() bool { return e.code == 230028 }
+
+func (p *Platform) messageAPIError(operation string, code int, message string) error {
+	return &feishuMessageAPIError{platform: p.tag(), operation: operation, code: code, message: message}
 }
 
 func (p *Platform) withFreshTenantAccessTokenRetry(ctx context.Context, operation string, fn feishuRequestFunc) error {
@@ -5140,6 +5155,10 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			cardID = id
 			sendContent = fmt.Sprintf(`{"type":"card","data":{"card_id":"%s"}}`, id)
 		} else {
+			var rejection core.ContentRejectedError
+			if errors.As(err, &rejection) && rejection.ContentRejected() {
+				return nil, err
+			}
 			slog.Info(p.tag()+": create card entity failed, falling back to inline card JSON",
 				"error", err)
 			sendContent = cardJSON
@@ -5164,7 +5183,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 					return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
 				}
 				if !resp.Success() {
-					return fmt.Errorf("%s: send preview (reply) code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+					return p.messageAPIError("send preview (reply)", resp.Code, resp.Msg)
 				}
 				return nil
 			})
@@ -5192,7 +5211,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 					return fmt.Errorf("%s: send preview: %w", p.tag(), err)
 				}
 				if !resp.Success() {
-					return fmt.Errorf("%s: send preview code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+					return p.messageAPIError("send preview", resp.Code, resp.Msg)
 				}
 				return nil
 			})
@@ -5400,7 +5419,7 @@ func (p *Platform) patchCardMessage(ctx context.Context, messageID, cardJSON str
 				return fmt.Errorf("%s: patch message: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: patch message code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return p.messageAPIError("patch message", resp.Code, resp.Msg)
 			}
 			return nil
 		})
@@ -5820,6 +5839,8 @@ func (e *feishuCardAPIError) Error() string {
 	}
 	return fmt.Sprintf("feishu card %s failed: code=%d msg=%s", e.API, e.Code, e.Msg)
 }
+
+func (e *feishuCardAPIError) ContentRejected() bool { return e != nil && e.Code == 230028 }
 
 func (e *feishuCardAPIError) Is(target error) bool {
 	if e == nil {
