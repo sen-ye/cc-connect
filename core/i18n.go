@@ -202,6 +202,7 @@ const (
 	MsgToolResultFmtOk           MsgKey = "tool_result_fmt_ok"
 	MsgToolResultFmtFailed       MsgKey = "tool_result_fmt_failed"
 	MsgProgressDetailsOmitted    MsgKey = "progress_details_omitted"
+	MsgProgressUnavailable       MsgKey = "progress_unavailable"
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCloseFailed        MsgKey = "session_close_failed"
 	MsgSessionResumeUnsafe       MsgKey = "session_resume_unsafe"
@@ -762,6 +763,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "詳情因平台內容限制已省略。",
 		LangJapanese:           "プラットフォームのコンテンツ制限により詳細を省略しました。",
 		LangSpanish:            "Detalles omitidos por las restricciones de contenido de la plataforma.",
+	},
+	MsgProgressUnavailable: {
+		LangEnglish:            "⚠️ Progress details could not be updated. Please refer to the task's final reply.",
+		LangChinese:            "⚠️ 进度详情暂时无法更新，请以任务的最终回复为准。",
+		LangTraditionalChinese: "⚠️ 進度詳情暫時無法更新，請以任務的最終回覆為準。",
+		LangJapanese:           "⚠️ 進捗の詳細を更新できませんでした。タスクの最終返信をご確認ください。",
+		LangSpanish:            "⚠️ No se pudieron actualizar los detalles del progreso. Consulta la respuesta final de la tarea.",
 	},
 	MsgExecutionStopped: {
 		LangEnglish:            "⏹ Execution stopped.",

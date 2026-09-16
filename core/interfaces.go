@@ -54,6 +54,23 @@ type ContentRejectedError interface {
 	ContentRejected() bool
 }
 
+// MessageErrorKind describes how a failed delivery can recover. Platform API
+// codes stay in adapters; renderers share the same recovery policy.
+type MessageErrorKind string
+
+const (
+	MessageErrorUnknown           MessageErrorKind = "unknown"
+	MessageErrorTransient         MessageErrorKind = "transient"
+	MessageErrorContentRejected   MessageErrorKind = "content_rejected"
+	MessageErrorTargetUnavailable MessageErrorKind = "target_unavailable"
+	MessageErrorPermanent         MessageErrorKind = "permanent"
+)
+
+type MessageErrorClassifier interface {
+	error
+	MessageErrorKind() MessageErrorKind
+}
+
 // ReplyContextReconstructor is an optional interface for platforms that can
 // recreate a reply context from a session key. This is needed for cron jobs
 // to send messages to users without an incoming message.

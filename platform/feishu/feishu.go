@@ -3,6 +3,7 @@ package feishu
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4095,6 +4096,7 @@ func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, ms
 func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content string) *larkim.ReplyMessageReqBody {
 	body := larkim.NewReplyMessageReqBodyBuilder().
 		MsgType(msgType).
+		Uuid(cryptorand.Text()).
 		Content(content)
 	if p.shouldReplyInThread(rc) {
 		body.ReplyInThread(true)
@@ -4126,6 +4128,7 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 		ReceiveIdType(larkim.ReceiveIdTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
+			Uuid(cryptorand.Text()).
 			MsgType(msgType).
 			Content(content).
 			Build()).
@@ -4231,6 +4234,10 @@ var (
 func isTransientError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var classified core.MessageErrorClassifier
+	if errors.As(err, &classified) {
+		return classified.MessageErrorKind() == core.MessageErrorTransient
 	}
 	// Typed syscall checks — more robust than string matching.
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
@@ -5169,10 +5176,16 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 	}
 
 	var msgID string
+	requestID := core.ProgressRequestID(ctx)
+	if requestID == "" {
+		requestID = cryptorand.Text()
+	}
 	if p.shouldUseThreadOrReplyAPI(rc) {
+		body := p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)
+		body.Uuid = &requestID
 		req := larkim.NewReplyMessageReqBuilder().
 			MessageId(rc.messageID).
-			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)).
+			Body(body).
 			Build()
 		var resp *larkim.ReplyMessageResp
 		if err := p.withTransientRetry(ctx, "send preview", func() error {
@@ -5198,6 +5211,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			ReceiveIdType(larkim.ReceiveIdTypeChatId).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
 				ReceiveId(chatID).
+				Uuid(requestID).
 				MsgType(larkim.MsgTypeInteractive).
 				Content(sendContent).
 				Build()).
@@ -5251,8 +5265,11 @@ func (p *Platform) createCardEntity(ctx context.Context, cardJSON string) (strin
 	}); err != nil {
 		return "", fmt.Errorf("%s: create card entity: %w", p.tag(), err)
 	}
-	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s: create card entity: HTTP status %d", p.tag(), apiResp.StatusCode)
+	if apiResp == nil {
+		return "", &messageHTTPError{operation: "create card entity"}
+	}
+	if apiResp.StatusCode != http.StatusOK {
+		return "", &messageHTTPError{operation: "create card entity", status: apiResp.StatusCode}
 	}
 	var resp struct {
 		Code int    `json:"code"`
@@ -5460,8 +5477,11 @@ func (p *Platform) updateCardEntity(ctx context.Context, h *feishuPreviewHandle,
 	}); err != nil {
 		return fmt.Errorf("%s: update card entity: %w", p.tag(), err)
 	}
-	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: update card entity: HTTP status %d", p.tag(), apiResp.StatusCode)
+	if apiResp == nil {
+		return &messageHTTPError{operation: "update card entity"}
+	}
+	if apiResp.StatusCode != http.StatusOK {
+		return &messageHTTPError{operation: "update card entity", status: apiResp.StatusCode}
 	}
 	var resp struct {
 		Code int    `json:"code"`

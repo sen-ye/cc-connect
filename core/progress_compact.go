@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -229,6 +230,12 @@ type compactProgressWriter struct {
 	lastSent   string
 	lastItems  []ProgressCardEntry // details already accepted by the platform
 	maxEntries int
+	failures   int
+	rebuilds   int
+	retryAt    time.Time
+	notified   bool
+	startID    string
+	startCalls int
 
 	// Throttle message edits to avoid platform rate limits (e.g. Discord ~5 edits/5s).
 	minUpdateInterval time.Duration
@@ -362,8 +369,8 @@ func normalizeProgressAgentLabel(name string) string {
 }
 
 // Append appends one progress item and updates the in-place message.
-// Returns true when compact rendering handled this item; false means caller
-// should fallback to legacy per-event send.
+// Returns false only when compact rendering is unavailable. Delivery failures
+// are handled here and must never request a raw per-event fallback.
 func (w *compactProgressWriter) Append(item string) bool {
 	return w.AppendEvent(ProgressEntryInfo, item, "", item)
 }
@@ -380,8 +387,11 @@ func (w *compactProgressWriter) AppendEvent(kind ProgressCardEntryKind, text str
 
 // AppendStructured appends one structured progress event and updates the in-place message.
 func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallback string) bool {
-	if !w.enabled || w.failed {
+	if !w.enabled {
 		return false
+	}
+	if w.failed {
+		return true
 	}
 	text := strings.TrimSpace(item.Text)
 	fallback = strings.TrimSpace(fallback)
@@ -431,7 +441,8 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 			if w.content == "" {
 				slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
 				w.failed = true
-				return false
+				w.notifyUnavailable()
+				return true
 			}
 		} else {
 			w.content = renderCardProgressMarkdownFallback(w.entries, truncated)
@@ -449,6 +460,9 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	if w.content == w.lastSent {
 		return true
 	}
+	if time.Now().Before(w.retryAt) {
+		return true
+	}
 
 	if w.handle != nil && w.minUpdateInterval > 0 && time.Since(w.lastUpdateAt) < w.minUpdateInterval {
 		return true
@@ -459,14 +473,14 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 // Finalize updates card progress state (running/completed/failed) without
 // appending a new progress entry.
 func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
-	if !w.enabled || w.failed || w.style != progressStyleCard || !w.usePayload || w.handle == nil {
+	if !w.enabled || w.style != progressStyleCard || !w.usePayload {
 		return false
+	}
+	if w.failed {
+		return true
 	}
 	if state == "" {
 		state = ProgressCardStateCompleted
-	}
-	if w.state == state {
-		return true
 	}
 	w.state = state
 	w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
@@ -476,32 +490,37 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	return w.publish()
 }
 
-// publish preserves progress rendering after a content restriction. Only the
-// unaccepted details are removed; accepted history, tool names and status stay.
+// publish handles failures without replaying progress as standalone messages.
 func (w *compactProgressWriter) publish() bool {
-	err := w.sendUpdate()
-	if err != nil {
-		var rejection ContentRejectedError
-		if !errors.As(err, &rejection) || !rejection.ContentRejected() {
-			slog.Warn("progress writer: publish failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-			w.failed = true
-			return false
-		}
-		slog.Warn("progress writer: content rejected, omitting unaccepted details", "platform", w.platform.Name(), "error", err)
-		w.omitUnacceptedDetails()
-		if err := w.sendUpdate(); err != nil {
-			slog.Warn("progress writer: omitted-details update failed", "platform", w.platform.Name(), "error", err)
+	redacted := false
+	for {
+		err := w.sendUpdate()
+		if err == nil {
+			w.lastSent = w.content
+			w.lastItems = append(w.lastItems[:0], w.items...)
 			w.lastUpdateAt = time.Now()
-			// The caller still holds the original details. Returning false
-			// would resend that rejected content as legacy text. Keep the
-			// writer available for subsequent events instead.
+			w.failures = 0
+			w.retryAt = time.Time{}
 			return true
 		}
+		kind := classifyProgressError(err)
+		if kind == MessageErrorContentRejected && !redacted {
+			slog.Warn("progress writer: content rejected, omitting unaccepted details", "platform", w.platform.Name(), "error", err)
+			w.omitUnacceptedDetails()
+			redacted = true
+			continue
+		}
+		if kind == MessageErrorTargetUnavailable && w.handle != nil && w.starter != nil && w.rebuilds < 1 {
+			slog.Warn("progress writer: replacing unavailable card", "platform", w.platform.Name(), "error", err)
+			w.handle = nil
+			w.startID = ""
+			w.startCalls = 0
+			w.rebuilds++
+			continue
+		}
+		w.deferPublish(kind, err)
+		return true
 	}
-	w.lastSent = w.content
-	w.lastItems = append(w.lastItems[:0], w.items...)
-	w.lastUpdateAt = time.Now()
-	return true
 }
 
 func (w *compactProgressWriter) sendUpdate() error {
@@ -511,7 +530,15 @@ func (w *compactProgressWriter) sendUpdate() error {
 		return w.updater.UpdateMessage(ctx, w.handle, w.content)
 	}
 	if w.starter != nil {
+		if w.startID == "" {
+			w.startID = rand.Text()
+		}
+		ctx = context.WithValue(ctx, progressRequestIDKey{}, w.startID)
+		w.startCalls++
 		handle, err := w.starter.SendPreviewStart(ctx, w.replyCtx, w.content)
+		if handle != nil {
+			w.handle = handle
+		}
 		if err != nil {
 			return err
 		}
@@ -519,6 +546,11 @@ func (w *compactProgressWriter) sendUpdate() error {
 			return errors.New("progress preview returned an empty handle")
 		}
 		w.handle = handle
+		if w.startCalls > 1 {
+			// A deduplicated create may return a card from a previous attempt.
+			// Refresh it with the newest buffered content before marking it sent.
+			return w.updater.UpdateMessage(ctx, handle, w.content)
+		}
 		return nil
 	}
 	if err := w.platform.Send(ctx, w.replyCtx, w.content); err != nil {
@@ -557,9 +589,6 @@ func (w *compactProgressWriter) omitUnacceptedDetails() {
 }
 
 func (w *compactProgressWriter) withAPITimeout() (context.Context, context.CancelFunc) {
-	if _, hasDeadline := w.ctx.Deadline(); hasDeadline {
-		return w.ctx, func() {}
-	}
 	return context.WithTimeout(w.ctx, compactProgressAPITimeout)
 }
 

@@ -1970,6 +1970,7 @@ func TestCUJ_I1_RichCardLinkedToPlatformAndIntegration(t *testing.T) {
 func TestCUJ_I2_LegacyCardLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I2: covered by release-gate TestCC_CARD_02_legacy")
 	t.Run("ContentRejectionKeepsProgress", testProgressContentRejectionJourney)
+	t.Run("DeliveryFailureKeepsToolsOutOfChat", testProgressRecoveryJourney)
 }
 
 // CUJ-I3 · Display modes (quiet/compact/full) each produce expected output.
