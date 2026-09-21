@@ -41,7 +41,7 @@ type Agent struct {
 	configEnv        []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	cmdArgsFlag      string   // if set, claude args are passed as a single string via this flag (e.g. "-a")
 	model            string
-	reasoningEffort  string // "low" | "medium" | "high" | "max"
+	reasoningEffort  string // "low" | "medium" | "high" | "xhigh" | "max"
 	mode             string // "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions" | "dontAsk"
 	allowedTools     []string
 	disallowedTools  []string
@@ -302,6 +302,8 @@ func normalizeEffort(raw string) string {
 		return "medium"
 	case "high":
 		return "high"
+	case "xhigh":
+		return "xhigh"
 	case "max":
 		return "max"
 	default:
@@ -372,7 +374,7 @@ func (a *Agent) GetReasoningEffort() string {
 }
 
 func (a *Agent) AvailableReasoningEfforts() []string {
-	return []string{"low", "medium", "high", "max"}
+	return []string{"low", "medium", "high", "xhigh", "max"}
 }
 
 func (a *Agent) configuredModels() []core.ModelOption {

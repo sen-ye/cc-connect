@@ -12,6 +12,8 @@ type projectStateData struct {
 	WorkDirOverride         string            `json:"work_dir_override,omitempty"`
 	WorkspaceDirOverrides   map[string]string `json:"workspace_dir_overrides,omitempty"`
 	WorkspaceModelOverrides map[string]string `json:"workspace_model_overrides,omitempty"`
+	// The empty key stores the project default; other keys are workspace paths.
+	ReasoningEffortOverrides map[string]string `json:"reasoning_effort_overrides,omitempty"`
 }
 
 // ProjectStateStore persists lightweight runtime state for one project.
@@ -107,6 +109,25 @@ func (ps *ProjectStateStore) ClearWorkspaceModelOverride(workspace string) {
 
 func (ps *ProjectStateStore) ClearWorkDirOverride() {
 	ps.SetWorkDirOverride("")
+}
+
+func (ps *ProjectStateStore) ReasoningEffortOverride(workspace string) string {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return ps.state.ReasoningEffortOverrides[workspace]
+}
+
+func (ps *ProjectStateStore) SetReasoningEffortOverride(workspace, effort string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if effort == "" {
+		delete(ps.state.ReasoningEffortOverrides, workspace)
+		return
+	}
+	if ps.state.ReasoningEffortOverrides == nil {
+		ps.state.ReasoningEffortOverrides = make(map[string]string)
+	}
+	ps.state.ReasoningEffortOverrides[workspace] = effort
 }
 
 func (ps *ProjectStateStore) Save() {

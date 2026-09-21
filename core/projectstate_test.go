@@ -95,3 +95,27 @@ func TestWorkspaceModelOverride(t *testing.T) {
 		t.Fatalf("WorkspaceModelOverride(%q) after clearing other workspace = %q, want %q", workspaceB, got, "sonnet")
 	}
 }
+
+func TestReasoningEffortOverrides_SaveLoadAndClear(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.json")
+	store := NewProjectStateStore(path)
+	store.SetReasoningEffortOverride("", "high")
+	store.SetReasoningEffortOverride("/workspace/a", "max")
+	store.SetReasoningEffortOverride("/workspace/b", "low")
+	store.Save()
+	reloaded := NewProjectStateStore(path)
+	for scope, want := range map[string]string{"": "high", "/workspace/a": "max", "/workspace/b": "low", "/missing": ""} {
+		if got := reloaded.ReasoningEffortOverride(scope); got != want {
+			t.Fatalf("ReasoningEffortOverride(%q) = %q, want %q", scope, got, want)
+		}
+	}
+	reloaded.SetReasoningEffortOverride("/workspace/a", "")
+	reloaded.Save()
+	cleared := NewProjectStateStore(path)
+	if got := cleared.ReasoningEffortOverride("/workspace/a"); got != "" {
+		t.Fatalf("cleared effort = %q, want empty", got)
+	}
+	if cleared.ReasoningEffortOverride("") != "high" || cleared.ReasoningEffortOverride("/workspace/b") != "low" {
+		t.Fatal("clearing one workspace changed another scope")
+	}
+}

@@ -1776,6 +1776,69 @@ func TestCUJ_F2_ModelSwitchLinkedToAgent(t *testing.T) {
 	t.Log("CUJ-F2: model switching is per-agent; covered by agent/*_test.go model tests")
 }
 
+func TestCUJ_F5_ReasoningSurvivesReapingAndRestart(t *testing.T) {
+	for _, multiWorkspace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multi_workspace_%v", multiWorkspace), func(t *testing.T) {
+			root := t.TempDir()
+			workspace := normalizeWorkspacePath(t.TempDir())
+			const agentName = "cuj-persistent-reasoning"
+			RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+				effort, _ := opts["reasoning_effort"].(string)
+				dir, _ := opts["work_dir"].(string)
+				return &reasoningPersistenceAgent{name: agentName, workDir: dir, effort: effort}, nil
+			})
+			p := &stubPlatformEngine{n: "test"}
+			newEngine := func() *Engine {
+				a := &reasoningPersistenceAgent{name: agentName, effort: "high"}
+				e := NewEngine("test", a, []Platform{p}, filepath.Join(root, "sessions.json"), LangEnglish)
+				e.SetProjectStateStore(NewProjectStateStore(filepath.Join(root, "project.json")))
+				if multiWorkspace {
+					e.SetMultiWorkspace(root, filepath.Join(root, "bindings.json"))
+					e.workspaceBindings.Bind("project:test", "room", "room", workspace)
+				}
+				t.Cleanup(func() { _ = e.Stop() })
+				return e
+			}
+			e := newEngine()
+			const sessionKey = "test:room:user"
+			send := func(content, want string) {
+				t.Helper()
+				p.clearSent()
+				e.ReceiveMessage(p, &Message{SessionKey: sessionKey, Platform: "test", UserID: "user", Content: content, ReplyCtx: "ctx"})
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					_, sessions := e.sessionContextForKey(sessionKey)
+					if strings.Contains(strings.Join(p.getSent(), "\n"), want) && !sessions.GetOrCreateActive(sessionKey).Busy() {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				t.Fatalf("after %q, replies = %v, want %q", content, p.getSent(), want)
+			}
+
+			// Choose an effort and verify that a real turn uses it.
+			send("hello", "runtime effort: high")
+			send("/reasoning max", "Reasoning effort switched to `max`")
+			send("check effort", "runtime effort: max")
+			if multiWorkspace {
+				ws := e.workspacePool.Get(workspace)
+				ws.mu.Lock()
+				ws.lastActivity = time.Now().Add(-time.Hour)
+				ws.mu.Unlock()
+				e.reapIdleWorkspaces()
+				send("after idle", "runtime effort: max")
+			}
+			// A new engine reloads only persisted state, as a service restart does.
+			if err := e.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			e = newEngine()
+			send("after restart", "runtime effort: max")
+			send("/reasoning", "Current reasoning effort: max")
+		})
+	}
+}
+
 // CUJ-F3 · /lang switches i18n locale; next reply uses new language.
 func TestCUJ_F3_LangSwitchChangesReplyLanguage(t *testing.T) {
 	env := newCUJEnv(t)
