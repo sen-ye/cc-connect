@@ -30,6 +30,76 @@ func TestAppServerSession_ApplyThreadRuntimeState(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_ResumeLargeHistoryPreservesThread(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdin := &lockedWriteCloser{}
+	s := &appServerSession{
+		ctx:     ctx,
+		cancel:  cancel,
+		events:  make(chan core.Event, 2),
+		stdin:   stdin,
+		pending: make(map[int64]chan rpcResponseEnvelope),
+	}
+	s.alive.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- s.ensureThread("original-thread") }()
+
+	var req struct {
+		ID     int64          `json:"id"`
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(waitForWrittenJSONLine(t, stdin)), &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if req.Method != "thread/resume" || req.Params["threadId"] != "original-thread" {
+		t.Fatalf("unexpected resume request: %#v", req)
+	}
+	if _, overridesHistory := req.Params["history"]; overridesHistory {
+		t.Fatal("resume must retain the history stored by Codex")
+	}
+
+	// A long-lived thread can exceed the transport's 10 MiB line limit.
+	// Model the server returning that history unless metadata-only resume
+	// is requested; the persisted conversation itself is never replaced.
+	turns := []any{}
+	if req.Params["excludeTurns"] != true {
+		turns = append(turns, map[string]any{"items": []any{map[string]any{
+			"type": "agentMessage", "text": strings.Repeat("x", 11*1024*1024),
+		}}})
+	}
+	response, err := json.Marshal(map[string]any{
+		"id": req.ID,
+		"result": map[string]any{
+			"cwd": "/tmp/project", "model": "gpt-6-astra", "reasoningEffort": "max",
+			"thread": map[string]any{"id": "original-thread", "turns": turns},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	s.wg.Add(1)
+	s.readLoop(bytes.NewReader(append(response, '\n')))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume of a thread with more than 10 MiB of history failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume did not finish")
+	}
+	if got := s.threadID.Load(); got != "original-thread" {
+		t.Fatalf("thread = %v, want original-thread", got)
+	}
+	if got := s.GetModel(); got != "gpt-6-astra" {
+		t.Fatalf("model = %q, want gpt-6-astra", got)
+	}
+	if got := s.GetReasoningEffort(); got != "max" {
+		t.Fatalf("reasoning effort = %q, want max", got)
+	}
+}
+
 func TestAppServerSession_HandleRateLimitsUpdatedCachesUsage(t *testing.T) {
 	s := &appServerSession{}
 	raw, err := json.Marshal(appServerRateLimitsResponse{

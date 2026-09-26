@@ -347,6 +347,9 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		params := s.threadRequestParams()
 		params["threadId"] = resumeID
 		params["persistExtendedHistory"] = true
+		// Only metadata is consumed here. Returning the entire history can
+		// exceed the transport's line limit; Codex still loads it for the model.
+		params["excludeTurns"] = true
 
 		var resp threadResumeResponse
 		if err := s.request("thread/resume", params, &resp); err != nil {
