@@ -801,6 +801,17 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	if event.Event.Operator != nil {
 		userID = event.Event.Operator.OpenID
 	}
+
+	// Check allow_from filter: skip card actions from users not authorized to
+	// command the agent. This mirrors the plain-text message handler's check so
+	// that clicking a card button (cmd:/perm:/nav:/act:/askq:) cannot bypass
+	// the per-user allowlist when the chat-level allow_chat filter admits the
+	// chat (Issue #1852).
+	if userID == "" || !core.AllowList(p.allowFrom, userID) {
+		slog.Debug(p.tag()+": card action from unauthorized user", "user", userID)
+		return nil, nil
+	}
+
 	chatID := ""
 	messageID := ""
 	if event.Event.Context != nil {
@@ -2807,6 +2818,18 @@ func extractPostPlainText(content string) string {
 					lang := elem.Language
 					line = append(line, "```"+lang+"\n"+elem.Text+"\n```")
 				}
+			case "hr":
+				// Lark posts render an `hr` element as a horizontal rule;
+				// map it to a standalone markdown separator on its own line
+				// so the agent (and downstream markdown renderers) can
+				// recognize the boundary. We flush any pending line text
+				// first so the rule is not glued to surrounding text
+				// (issue #508; related #470/#472).
+				if len(line) > 0 {
+					parts = append(parts, strings.Join(line, ""))
+					line = line[:0]
+				}
+				parts = append(parts, "---")
 			}
 		}
 		if len(line) > 0 {

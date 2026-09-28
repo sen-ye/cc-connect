@@ -40,6 +40,7 @@ type codexSession struct {
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
 	alive          atomic.Bool
+	turnInFlight   atomic.Bool
 	closeOnce      sync.Once
 	cmdMu          sync.Mutex
 	cmds           map[*exec.Cmd]struct{}
@@ -119,12 +120,24 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 // If a threadID exists (from a prior turn or resume), uses `codex exec resume <id> <prompt>`.
 // Otherwise uses `codex exec <prompt>` to start a new conversation.
 func (cs *codexSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	if !cs.alive.Load() {
+		return fmt.Errorf("session is closed")
+	}
+	if !cs.turnInFlight.CompareAndSwap(false, true) {
+		return fmt.Errorf("codex session turn already in progress")
+	}
+	// The deferred cleanup reads started when Send returns, so setup failures
+	// release the guard while a launched process keeps it until readLoop exits.
+	started := false
+	defer func() {
+		if !started {
+			cs.turnInFlight.Store(false)
+		}
+	}()
+
 	if len(files) > 0 {
 		filePaths := core.SaveFilesToDisk(cs.workDir, messageID, files)
 		prompt = core.AppendFileRefs(prompt, filePaths)
-	}
-	if !cs.alive.Load() {
-		return fmt.Errorf("session is closed")
 	}
 
 	prompt, imagePaths, err := cs.stageImages(prompt, images)
@@ -171,6 +184,7 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 
 	cs.wg.Add(1)
 	go cs.readLoop(cmd, stdout, &stderrBuf)
+	started = true
 
 	return nil
 }
@@ -299,6 +313,7 @@ func codexImageExt(mime string) string {
 func (cs *codexSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer) {
 	defer cs.wg.Done()
 	defer func() {
+		defer cs.turnInFlight.Store(false)
 		defer cs.removeCmd(cmd)
 		if err := cmd.Wait(); err != nil {
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
@@ -381,6 +396,12 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 			cs.contextUsage = nil
 			cs.contextMu.Unlock()
 			slog.Debug("codexSession: thread started", "thread_id", tid)
+			// 立即通知 Engine 持久化新会话 ID，避免首轮尚未完成时重启导致无法恢复。
+			select {
+			case cs.events <- core.Event{Type: core.EventText, SessionID: tid}:
+			case <-cs.ctx.Done():
+				return
+			}
 		}
 
 	case "turn.started":

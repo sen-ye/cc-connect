@@ -40,6 +40,15 @@ func TestReasoningEffort_UltraPreserved(t *testing.T) {
 	}
 }
 
+// Upstream aliases and model-specific extensions must coexist after a sync.
+func TestReasoningEfforts_UpstreamAliasesPreserveModelExtensions(t *testing.T) {
+	a := &Agent{cmd: os.Args[0], cliExtraArgs: []string{"-test.run=TestReasoningMetadataHelper", "--"}, workDir: t.TempDir(), configEnv: []string{"CC_REASONING_HELPER=1"}, model: "new-level-model", activeIdx: -1}
+	want := []string{"none", "minimal", "xhigh", "max", "future-level"}
+	if got := a.AvailableReasoningEfforts(); !slices.Equal(got, want) {
+		t.Fatalf("model efforts = %v, want upstream aliases and model extensions %v", got, want)
+	}
+}
+
 func TestReasoningMetadataHelper(t *testing.T) {
 	if os.Getenv("CC_REASONING_HELPER") != "1" {
 		return
@@ -63,7 +72,12 @@ func TestReasoningMetadataHelper(t *testing.T) {
 			result = map[string]any{"config": map[string]any{"model": "large-model"}}
 		case "model/list":
 			models := []any{}
-			for name, levels := range map[string][]string{"large-model": {"low", "high", "max", "ultra"}, "small-model": {"low", "high"}, "no-reasoning-model": {}} {
+			for name, levels := range map[string][]string{
+				"large-model":        {"low", "high", "max", "ultra"},
+				"small-model":        {"low", "high"},
+				"no-reasoning-model": {},
+				"new-level-model":    {"off", "min", "extra_high", "maximum", "future-level", "max"},
+			} {
 				efforts := []any{}
 				for _, level := range levels {
 					efforts = append(efforts, map[string]any{"reasoningEffort": level})

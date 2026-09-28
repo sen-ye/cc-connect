@@ -99,12 +99,14 @@ func (a *Agent) modelReasoningEfforts() []string {
 			return levels
 		}
 	}
-	// Older CLIs without model/list keep their existing behavior. A failed
+	// CLIs without model/list use the upstream compatibility list. A failed
 	// refresh above retains the last successful model-specific capabilities.
 	return legacyReasoningEfforts()
 }
 
-func legacyReasoningEfforts() []string { return []string{"low", "medium", "high", "xhigh", "max"} }
+func legacyReasoningEfforts() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+}
 
 type metadataRequest func(string, any, any) error
 

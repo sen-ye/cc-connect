@@ -4187,6 +4187,7 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 	sessionFile := filepath.Join(filepath.Dir(e.sessions.StorePath()),
 		fmt.Sprintf("%s_ws_%s.json", e.name, hex.EncodeToString(h[:4])))
 	sessions := NewSessionManager(sessionFile)
+	sessions.InvalidateForAgent(agent.Name())
 
 	ws.agent = agent
 	ws.sessions = sessions
@@ -6542,6 +6543,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		case EventError:
 			cp.Finalize(ProgressCardStateFailed)
 			sp.discard()
+			// A backend can create its resumable session before a turn fails
+			// (for example Codex emits thread.started, then turn.failed). Persist
+			// that ID here as well as from event.SessionID so the retry reuses the
+			// conversation that already contains the user's original prompt.
+			if state.agentSession != nil {
+				if currentID := state.agentSession.CurrentSessionID(); currentID != "" && session.GetAgentSessionID() != currentID {
+					session.SetAgentSessionID(currentID, e.agent.Name())
+					sessions.Save()
+				}
+			}
 			state.mu.Lock()
 			state.eventsNeedResync = true
 			state.mu.Unlock()
@@ -10348,7 +10359,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 				buttons = append(buttons, row)
 			}
 			sb.WriteString("\n")
-			sb.WriteString(e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
+			sb.WriteString(e.reasoningUsage(efforts))
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
@@ -10369,7 +10380,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		}
 	}
 	if !valid {
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
+		e.reply(p, msg.ReplyCtx, e.reasoningUsage(efforts))
 		return
 	}
 
@@ -10383,6 +10394,10 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+}
+
+func (e *Engine) reasoningUsage(efforts []string) string {
+	return e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|"))
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
@@ -12146,6 +12161,19 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 			cb.Markdown(body)
 			cb.Note(e.i18n.T(MsgAskQuestionNoteMulti))
 		} else {
+			// Single-select path. Issue #1658: rendering each option as a
+			// column_set row (description column + button column) looked right
+			// on Feishu desktop but the button clicks never dispatched on
+			// Feishu mobile, and even on desktop the column_set > column >
+			// button layout was reported as unreliable. Permission cards use a
+			// flat action row (tag:"action") and their cmd: clicks dispatch
+			// reliably on both desktop and mobile. So mirror that pattern:
+			// description as markdown, then a per-option action row with a
+			// single button. Each click carries the askq:qIdx:optIdx value
+			// plus askq_label/askq_question extras so the Feishu callback
+			// handler can render the post-answer card. The Note still tells
+			// users how to fall back to numeric/text input if their client
+			// happens to ignore the button row.
 			cb.Markdown(body)
 			for i, opt := range q.Options {
 				desc := opt.Label
@@ -12153,9 +12181,15 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 					desc += " — " + opt.Description
 				}
 				answerData := fmt.Sprintf("askq:%d:%d", qIdx, i+1)
-				cb.ListItemBtnExtra(desc, opt.Label, "default", answerData, map[string]string{
-					"askq_label":    opt.Label,
-					"askq_question": q.Question,
+				cb.Markdown("**" + desc + "**")
+				cb.Buttons(CardButton{
+					Text:  opt.Label,
+					Type:  "primary",
+					Value: answerData,
+					Extra: map[string]string{
+						"askq_label":    opt.Label,
+						"askq_question": q.Question,
+					},
 				})
 			}
 			cb.Note(e.i18n.T(MsgAskQuestionNote))
@@ -13526,7 +13560,7 @@ func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 		Markdown(sb.String()).
 		Select(e.i18n.T(MsgReasoningSelectPlaceholder), opts, initVal).
 		Buttons(e.cardBackButton())
-	cb.Note(e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
+	cb.Note(e.reasoningUsage(efforts))
 	return cb.Build()
 }
 

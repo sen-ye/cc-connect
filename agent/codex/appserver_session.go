@@ -1699,10 +1699,16 @@ func normalizeRuntimeReasoningEffort(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
 		return ""
+	case "off", "disabled", "disable":
+		return "none"
+	case "min":
+		return "minimal"
 	case "med":
 		return "medium"
-	case "x-high", "very-high":
+	case "x-high", "extra-high", "extra_high", "very-high":
 		return "xhigh"
+	case "maximum":
+		return "max"
 	default:
 		return strings.ToLower(strings.TrimSpace(raw))
 	}
