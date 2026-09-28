@@ -37,6 +37,10 @@
 # Session data storage directory (default: ~/.cc-connect)
 # Stores conversation history and session state as JSON files.
 # 会话数据存储目录（默认 ~/.cc-connect），以 JSON 文件保存对话历史和会话状态。
+# NOTE: Prefer an absolute path when running under systemd / launchd — service
+# managers may not propagate HOME, and any relative value would be resolved
+# against work_dir, which agent subprocesses cd into before reading files.
+# 建议在 systemd/launchd 部署下使用绝对路径，避免 HOME 缺失时相对路径解析到 work_dir。
 # data_dir = "/path/to/custom/dir"
 
 # Attachment send-back switch for `cc-connect send --image/--file`.
@@ -122,6 +126,7 @@ level = "info" # debug, info, warn, error
 
 # [display]
 # mode = "full"             # Display mode: "full" (default), "compact", or "quiet"
+# card_mode = "legacy"      # Card rendering: "legacy" (default) or "rich" (Feishu Card 2.0)
 #                           # full: show thinking + tool messages as separate messages
 #                           #       显示思考和工具消息，每条单独发送
 #                           # compact: hide thinking/tool, each text segment sent separately

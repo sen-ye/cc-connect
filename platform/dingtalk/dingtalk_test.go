@@ -1673,3 +1673,143 @@ func TestCardTitleFromContent_UsedInReplyPayload(t *testing.T) {
 		t.Fatal("timed out waiting for reply payload")
 	}
 }
+
+// TestOnRawMessage_RichTextWithReplyEnrichesContent verifies that the fix for
+// richText messages (which previously skipped quote/reply detection) now
+// calls formatReplyContent and prepends the quoted text.
+func TestOnRawMessage_RichTextWithReplyEnrichesContent(t *testing.T) {
+	var got *core.Message
+	p := &Platform{
+		handler: func(_ core.Platform, msg *core.Message) {
+			got = msg
+		},
+	}
+
+	p.onRawMessage(`{
+		"msgtype": "richText",
+		"msgId": "msg-rt-reply-1",
+		"createAt": 2000000000000,
+		"conversationType": "1",
+		"conversationId": "conv-1",
+		"senderStaffId": "user-1",
+		"senderNick": "Alice",
+		"sessionWebhook": "https://example.invalid/webhook",
+		"content": {
+			"richText": [
+				{"text": "please check this"}
+			]
+		},
+		"text": {
+			"content": "please check this",
+			"isReplyMsg": true,
+			"repliedMsg": {
+				"msgType": "text",
+				"content": {
+					"text": "what about the bug?"
+				}
+			}
+		}
+	}`)
+
+	if got == nil {
+		t.Fatal("handler was not called for richText reply message")
+	}
+	expected := "引用: \"what about the bug?\"\n\nplease check this"
+	if got.Content != expected {
+		t.Errorf("message content = %q, want %q", got.Content, expected)
+	}
+}
+
+// TestOnRawMessage_RichTextWithoutIsReplyMsgUsesRichTextBody guards the first
+// half of the richText reply guard: a richText message whose "text" object has
+// no isReplyMsg flag must NOT be treated as a quoted/reply message.
+//
+// The fixtures deliberately give the richText array and the "text" object
+// different bodies ("from richtext array" vs "from text object"). That way an
+// unconditional formatReplyContent call (the regression this test locks out)
+// would return the "text" object body via its RepliedMsg == nil fast path,
+// producing a different string and failing the assertion.
+func TestOnRawMessage_RichTextWithoutIsReplyMsgUsesRichTextBody(t *testing.T) {
+	var got *core.Message
+	p := &Platform{
+		handler: func(_ core.Platform, msg *core.Message) {
+			got = msg
+		},
+	}
+
+	p.onRawMessage(`{
+		"msgtype": "richText",
+		"msgId": "msg-rt-no-isreply-1",
+		"createAt": 2000000000000,
+		"conversationType": "1",
+		"conversationId": "conv-1",
+		"senderStaffId": "user-1",
+		"senderNick": "Alice",
+		"sessionWebhook": "https://example.invalid/webhook",
+		"content": {
+			"richText": [
+				{"text": "from richtext array"}
+			]
+		},
+		"text": {
+			"content": "from text object"
+		}
+	}`)
+
+	if got == nil {
+		t.Fatal("handler was not called for richText message without isReplyMsg")
+	}
+	if strings.HasPrefix(got.Content, "引用: ") {
+		t.Errorf("message content = %q, must not carry the quote prefix when isReplyMsg is absent", got.Content)
+	}
+	want := "from richtext array"
+	if got.Content != want {
+		t.Errorf("message content = %q, want %q (richText array body, guard must be skipped)", got.Content, want)
+	}
+}
+
+// TestOnRawMessage_RichTextReplyFlagWithoutRepliedMsgUsesRichTextBody covers
+// the second, half-boundary case: isReplyMsg is true but the repliedMsg field
+// is missing. This must not panic and must not be treated as a quoted message.
+//
+// As above, the two fixtures differ on purpose so that dropping the
+// "&& RepliedMsg != nil" half of the guard would surface as "from text object".
+func TestOnRawMessage_RichTextReplyFlagWithoutRepliedMsgUsesRichTextBody(t *testing.T) {
+	var got *core.Message
+	p := &Platform{
+		handler: func(_ core.Platform, msg *core.Message) {
+			got = msg
+		},
+	}
+
+	p.onRawMessage(`{
+		"msgtype": "richText",
+		"msgId": "msg-rt-flag-no-replied-1",
+		"createAt": 2000000000000,
+		"conversationType": "1",
+		"conversationId": "conv-1",
+		"senderStaffId": "user-1",
+		"senderNick": "Alice",
+		"sessionWebhook": "https://example.invalid/webhook",
+		"content": {
+			"richText": [
+				{"text": "from richtext array"}
+			]
+		},
+		"text": {
+			"content": "from text object",
+			"isReplyMsg": true
+		}
+	}`)
+
+	if got == nil {
+		t.Fatal("handler was not called for richText message with isReplyMsg but no repliedMsg")
+	}
+	if strings.HasPrefix(got.Content, "引用: ") {
+		t.Errorf("message content = %q, must not carry the quote prefix when repliedMsg is absent", got.Content)
+	}
+	want := "from richtext array"
+	if got.Content != want {
+		t.Errorf("message content = %q, want %q (richText array body, guard must require repliedMsg)", got.Content, want)
+	}
+}
