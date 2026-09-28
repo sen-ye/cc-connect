@@ -840,6 +840,7 @@ func TestCUJ_E5_TimerDisappearsAfterFiring(t *testing.T) {
 // ===========================================================================
 
 func TestCUJ_B12_RestartRestoresEverything(t *testing.T) {
+	t.Run("resume_notification_does_not_complete_user_turn", testResumeNotificationJourney)
 	dir := t.TempDir()
 	storePath := dir + "/sessions.json"
 	cronDir := dir + "/cron"
@@ -947,6 +948,38 @@ func TestCUJ_B12_RestartRestoresEverything(t *testing.T) {
 		if !foundCron {
 			t.Fatalf("run2: cron job not restored. Jobs: %+v", jobs)
 		}
+	}
+}
+
+func testResumeNotificationJourney(t *testing.T) {
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	env.userSends("resume", "before restart")
+	env.waitFor("initial reply", time.Second, func() bool {
+		return env.sentContains("ok") && !env.engine.sessions.GetOrCreateActive("test:resume").Busy()
+	})
+	_ = env.engine.Stop()
+	agent := &cujAgent{nextSessionEvents: []Event{
+		{Type: EventResult, Content: "Recovered background task stopped", Done: true, Background: true},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "wait for experiment"},
+	}}
+	env.engine = NewEngine("test", agent, []Platform{env.plat}, env.tempDir+"/sessions.json", LangEnglish)
+	env.agent = agent
+	env.plat.clearSent()
+	env.userSends("resume", "continue")
+	env.waitFor("background notice", time.Second, func() bool { return env.sentContains("Recovered background task stopped") })
+	env.userSends("resume", "follow-up")
+	env.waitFor("follow-up queued", time.Second, func() bool { return env.sentContains(env.engine.i18n.T(MsgMessageQueued)) })
+	agent.mu.Lock()
+	s := agent.sessions[len(agent.sessions)-1]
+	agent.mu.Unlock()
+	s.events <- Event{Type: EventResult, Content: "Real task completed", Done: true}
+	env.waitFor("real completion and queued reply", 2*time.Second, func() bool { return env.sentContains("Real task completed") && env.sentContains("ok") })
+	if env.sentContains(env.engine.i18n.T(MsgEmptyResponse)) {
+		t.Fatalf("resume emitted empty-response placeholder: %v", env.plat.getSent())
+	}
+	if got := strings.Count(strings.Join(env.plat.getSent(), "\n"), "Real task completed"); got != 1 {
+		t.Fatalf("real completion appeared %d times", got)
 	}
 }
 

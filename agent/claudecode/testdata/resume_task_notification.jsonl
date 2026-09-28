@@ -1,0 +1,4 @@
+{"type":"command_lifecycle","state":"queued","command_uuid":"CLIENT_UUID"}
+{"type":"result","subtype":"success","uuid":"notification-result","num_turns":0,"is_error":false,"origin":{"kind":"task-notification"},"duration_api_ms":0,"stop_reason":null,"result":""}
+{"type":"command_lifecycle","state":"started","command_uuid":"CLIENT_UUID"}
+{"type":"result","subtype":"success","uuid":"user-result","user_message_uuid":"CLIENT_UUID","user_message_uuids":["CLIENT_UUID"],"num_turns":0,"is_error":false,"duration_api_ms":0,"stop_reason":null,"local_command":"context","result":"Context ready"}

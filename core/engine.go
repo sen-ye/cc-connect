@@ -5057,6 +5057,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 					"status", event.ToolStatus)
 
 			case EventResult:
+				if !event.Done {
+					continue
+				}
 				fullResponse := event.Content
 				if fullResponse == "" && len(textParts) > 0 {
 					fullResponse = strings.Join(textParts, "")
@@ -5945,6 +5948,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					"output_tokens", event.OutputTokens,
 					"metadata", event.Metadata,
 				)
+				continue
+			}
+			if event.Background {
+				e.deliverBackgroundResult(p, replyCtx, session, sessions, event)
 				continue
 			}
 			cp.Finalize(ProgressCardStateCompleted)
@@ -10300,10 +10307,14 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	efforts := switcher.AvailableReasoningEfforts()
+	if len(efforts) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
+		return
+	}
+
 	if len(args) == 0 {
 		if !supportsCards(p) {
-			efforts := switcher.AvailableReasoningEfforts()
-
 			var sb strings.Builder
 			current := switcher.GetReasoningEffort()
 			if current == "" {
@@ -10337,7 +10348,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 				buttons = append(buttons, row)
 			}
 			sb.WriteString("\n")
-			sb.WriteString(e.i18n.T(MsgReasoningUsage))
+			sb.WriteString(e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
@@ -10345,7 +10356,6 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
 	target := strings.ToLower(strings.TrimSpace(args[0]))
 	if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
 		target = efforts[idx-1]
@@ -10359,7 +10369,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		}
 	}
 	if !valid {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningUsage))
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
 		return
 	}
 
@@ -10903,6 +10913,13 @@ func (e *Engine) processCompressEvents(state *interactiveState, session *Session
 				textParts = append(textParts, fmt.Sprintf(e.i18n.T(MsgToolResult), tn, out)+"\n")
 			}
 		case EventResult:
+			if !event.Done {
+				continue
+			}
+			if event.Background {
+				e.deliverBackgroundResult(p, replyCtx, session, sessions, event)
+				continue
+			}
 			result := event.Content
 			if result == "" && len(textParts) > 0 {
 				result = strings.Join(textParts, "")
@@ -13483,6 +13500,9 @@ func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 	}
 
 	efforts := switcher.AvailableReasoningEfforts()
+	if len(efforts) == 0 {
+		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
+	}
 	current := switcher.GetReasoningEffort()
 
 	var sb strings.Builder
@@ -13506,7 +13526,7 @@ func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 		Markdown(sb.String()).
 		Select(e.i18n.T(MsgReasoningSelectPlaceholder), opts, initVal).
 		Buttons(e.cardBackButton())
-	cb.Note(e.i18n.T(MsgReasoningUsage))
+	cb.Note(e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|")))
 	return cb.Build()
 }
 
@@ -16372,6 +16392,9 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 			}
 		case EventResult:
 			// Use agentSession.CurrentSessionID() for the same reason as above.
+			if !event.Done || event.Background {
+				continue
+			}
 			if currentID := agentSession.CurrentSessionID(); currentID != "" {
 				saveRelaySessionID(currentID, true)
 			}
@@ -16457,6 +16480,9 @@ func (e *Engine) drainRelaySession(agentSession AgentSession, session *Session, 
 			}
 			switch ev.Type {
 			case EventResult:
+				if !ev.Done || ev.Background {
+					continue
+				}
 				slog.Info("relay: background drain completed (agent finished turn)",
 					"relay_key", relaySessionKey)
 				agentSession.Close()

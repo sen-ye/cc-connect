@@ -14,12 +14,12 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
-func TestNormalizeReasoningEffort_RejectsMinimal(t *testing.T) {
-	if got := normalizeReasoningEffort("minimal"); got != "" {
-		t.Fatalf("normalizeReasoningEffort(minimal) = %q, want empty", got)
-	}
-	if got := normalizeReasoningEffort("min"); got != "" {
-		t.Fatalf("normalizeReasoningEffort(min) = %q, want empty", got)
+// Normalization must not discard levels advertised by newer model metadata.
+func TestNormalizeReasoningEffort_PreservesModelLevels(t *testing.T) {
+	for raw, want := range map[string]string{"minimal": "minimal", " ULTRA ": "ultra", "med": "medium", "x-high": "xhigh"} {
+		if got := normalizeReasoningEffort(raw); got != want {
+			t.Fatalf("normalizeReasoningEffort(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 

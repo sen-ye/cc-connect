@@ -107,7 +107,10 @@ func runRelayVisibilityScenarioWith(t *testing.T, visibility string, sessionKey 
 		})
 		done <- err
 	}()
-	targetSession.events <- Event{Type: EventResult, Content: "ok"}
+	// A relay must wait through intermediate and unrelated background results.
+	targetSession.events <- Event{Type: EventResult, Content: "intermediate"}
+	targetSession.events <- Event{Type: EventResult, Content: "unrelated", Done: true, Background: true}
+	targetSession.events <- Event{Type: EventResult, Content: "ok", Done: true}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -173,7 +176,7 @@ func TestRelayGroupVisibility_DelegatesToPlatformInterface(t *testing.T) {
 		})
 		done <- err
 	}()
-	targetSession.events <- Event{Type: EventResult, Content: "ok"}
+	targetSession.events <- Event{Type: EventResult, Content: "ok", Done: true}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -222,7 +225,7 @@ func TestRelayGroupVisibility_FallsBackWhenPlatformReturnsNotOK(t *testing.T) {
 		})
 		done <- err
 	}()
-	targetSession.events <- Event{Type: EventResult, Content: "ok"}
+	targetSession.events <- Event{Type: EventResult, Content: "ok", Done: true}
 	select {
 	case err := <-done:
 		if err != nil {

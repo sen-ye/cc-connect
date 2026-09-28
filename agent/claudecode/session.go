@@ -42,6 +42,8 @@ type claudeSession struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
+	turnMu          sync.Mutex
+	turns           claudeTurnTracker
 
 	// activeModel stores the model id reported by the CLI's init event (e.g.
 	// "claude-opus-4-7[1m]"). It may be empty if the init event hasn't
@@ -638,6 +640,8 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 		cs.handleUser(raw)
 	case "result":
 		cs.handleResult(raw)
+	case "command_lifecycle":
+		cs.handleCommandLifecycle(raw)
 	case "control_request":
 		cs.handleControlRequest(raw)
 	case "control_cancel_request":
@@ -1110,9 +1114,25 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 }
 
 func (cs *claudeSession) handleResult(raw map[string]any) {
+	isCompaction := isCompactionResult(raw)
+	background, drop := cs.resultScope(raw, isCompaction)
+	if drop {
+		return
+	}
 	var content string
 	if result, ok := raw["result"].(string); ok {
 		content = result
+	}
+	if content == "" && claudeResultFailed(raw) {
+		if errors, ok := raw["errors"].([]any); ok {
+			var messages []string
+			for _, value := range errors {
+				if message, ok := value.(string); ok {
+					messages = append(messages, message)
+				}
+			}
+			content = strings.Join(messages, "\n")
+		}
 	}
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		cs.sessionID.Store(sid)
@@ -1124,7 +1144,6 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	// assistant messages after the compaction step. Treating these as
 	// Done=true would make the engine's processInteractiveEvents return
 	// early and drop the rest of the turn (issue #481).
-	isCompaction := isCompactionResult(raw)
 	if isCompaction {
 		slog.Info("claudeSession: mid-turn compaction event; continuing turn", "subtype", resultSubtype(raw))
 	}
@@ -1191,6 +1210,7 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		Content:                  content,
 		SessionID:                cs.CurrentSessionID(),
 		Done:                     !isCompaction,
+		Background:               background,
 		InputTokens:              inputTokens,
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
@@ -1296,10 +1316,7 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	}
 
 	if len(images) == 0 && len(files) == 0 {
-		return cs.writeJSON(map[string]any{
-			"type":    "user",
-			"message": map[string]any{"role": "user", "content": prompt},
-		})
+		return cs.writeUserMessage(prompt, messageID)
 	}
 
 	attachDir := filepath.Join(cs.workDir, ".cc-connect", "attachments")
@@ -1354,10 +1371,7 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	}
 	parts = append(parts, map[string]any{"type": "text", "text": textPart})
 
-	return cs.writeJSON(map[string]any{
-		"type":    "user",
-		"message": map[string]any{"role": "user", "content": parts},
-	})
+	return cs.writeUserMessage(parts, messageID)
 }
 
 // RespondPermission writes a control_response to the Claude process stdin.
@@ -1403,7 +1417,10 @@ func (cs *claudeSession) RespondPermission(requestID string, result core.Permiss
 func (cs *claudeSession) writeJSON(v any) error {
 	cs.stdinMu.Lock()
 	defer cs.stdinMu.Unlock()
+	return cs.writeJSONLocked(v)
+}
 
+func (cs *claudeSession) writeJSONLocked(v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

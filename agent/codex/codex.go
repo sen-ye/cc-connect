@@ -50,6 +50,8 @@ type Agent struct {
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
 	mu              sync.RWMutex
+	reasoningMu     sync.Mutex
+	reasoningCache  reasoningMetadataCache
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -147,22 +149,9 @@ func normalizeMode(raw string) string {
 }
 
 func normalizeReasoningEffort(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "":
-		return ""
-	case "low":
-		return "low"
-	case "medium", "med":
-		return "medium"
-	case "high":
-		return "high"
-	case "xhigh", "x-high", "very-high":
-		return "xhigh"
-	case "max":
-		return "max"
-	default:
-		return ""
-	}
+	// Validation belongs to the selected model's capability list (or the CLI
+	// for direct config values). Do not silently discard newer effort names.
+	return normalizeRuntimeReasoningEffort(raw)
 }
 
 func (a *Agent) Name() string { return "codex" }
@@ -207,7 +196,7 @@ func (a *Agent) GetReasoningEffort() string {
 }
 
 func (a *Agent) AvailableReasoningEfforts() []string {
-	return []string{"low", "medium", "high", "xhigh", "max"}
+	return a.modelReasoningEfforts()
 }
 
 func (a *Agent) configuredModels() []core.ModelOption {

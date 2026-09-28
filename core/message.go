@@ -495,6 +495,9 @@ type Event struct {
 	CacheReadInputTokens     int            // cache-read tokens (prior context retrieved from cache)
 	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
+	// Background results belong to an autonomous turn, not the pending user
+	// request. They may be delivered without completing that request.
+	Background bool
 }
 
 // HistoryEntry is one turn in a conversation.
