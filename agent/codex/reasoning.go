@@ -59,8 +59,9 @@ func (a *Agent) modelReasoningEfforts() []string {
 		opts.URL = a.appServerURL
 	}
 	a.mu.Unlock()
-	// Zero-value agents occur in tests and have no executable configuration.
-	if opts.Cmd == "" {
+	// New sets a work directory even when cmd is empty to enable discovery.
+	// Only a zero-value agent has no executable, work directory, or transport.
+	if opts.Cmd == "" && opts.Dir == "" && opts.URL == "" {
 		return legacyReasoningEfforts()
 	}
 	encoded, _ := json.Marshal(opts)
@@ -203,8 +204,12 @@ func openMetadataWebSocket(ctx context.Context, opts reasoningMetadataOptions) (
 func openMetadataStdio(ctx context.Context, opts reasoningMetadataOptions) (metadataRequest, func(), error) {
 	var id int64
 
+	bin, err := resolveCodexExecutable(opts.Cmd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codex reasoning metadata resolve CLI: %w", err)
+	}
 	args := append(append([]string(nil), opts.Args...), "app-server")
-	cmd := exec.CommandContext(ctx, opts.Cmd, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.Dir
 	cmd.Env = core.MergeEnv(os.Environ(), opts.Env)
 	cmd.Stderr = io.Discard

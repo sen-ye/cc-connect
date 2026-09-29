@@ -40,6 +40,35 @@ func TestReasoningEffort_UltraPreserved(t *testing.T) {
 	}
 }
 
+// An omitted cmd enables upstream CLI discovery and must not turn the dynamic
+// reasoning picker into the compatibility list for every model.
+func TestReasoningEfforts_DiscoveredCLIUsesModelCapabilities(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeCodexScript(t, binDir,
+		"#!/bin/sh\nexec \"$CC_REASONING_TEST_BIN\" '-test.run=^TestReasoningMetadataHelper$'\n",
+		"& $env:CC_REASONING_TEST_BIN '-test.run=^TestReasoningMetadataHelper$'\nexit $LASTEXITCODE\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_CLI_PATH", "")
+	agent, err := New(map[string]any{
+		"work_dir": t.TempDir(),
+		"env": map[string]string{
+			"CC_REASONING_HELPER":   "1",
+			"CC_REASONING_TEST_BIN": os.Args[0],
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := agent.(*Agent)
+	if got := a.AvailableReasoningEfforts(); !slices.Equal(got, []string{"low", "high", "max", "ultra"}) {
+		t.Fatalf("discovered default model efforts = %v", got)
+	}
+	a.SetModel("small-model")
+	if got := a.AvailableReasoningEfforts(); !slices.Equal(got, []string{"low", "high"}) {
+		t.Fatalf("discovered small model efforts = %v", got)
+	}
+}
+
 // Upstream aliases and model-specific extensions must coexist after a sync.
 func TestReasoningEfforts_UpstreamAliasesPreserveModelExtensions(t *testing.T) {
 	a := &Agent{cmd: os.Args[0], cliExtraArgs: []string{"-test.run=TestReasoningMetadataHelper", "--"}, workDir: t.TempDir(), configEnv: []string{"CC_REASONING_HELPER=1"}, model: "new-level-model", activeIdx: -1}
