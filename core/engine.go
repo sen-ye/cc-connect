@@ -444,7 +444,7 @@ type Engine struct {
 	autoCompressAllowHeuristic bool
 	resetOnIdle                time.Duration
 
-	// Reply footer composition flags. The footer renders up to two lines:
+	// Reply footer composition flags. In addition to the session ID, it shows:
 	//   line 1 — model · [effort ·] out/in/cw/cr · ctx%   (gated by showContextIndicator)
 	//   line 2 — workspace directory                       (gated by showWorkdirIndicator)
 	// replyFooterEnabled is the master toggle: when false, no footer is emitted
@@ -6133,9 +6133,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// platforms implementing StatusFooterSender / StatusFooterUpdater
 			// can render it with smaller/dim styling. Other paths inline-append
 			// it via appendReplyFooter as a fallback. The default
-			// (non-CCD) reply footer keeps its existing inline behavior since
-			// it's a single short line that does not benefit from a separate
-			// card element. In rich mode, the inline-append fallback is
+			// (non-CCD) reply footer keeps its existing inline behavior for
+			// compatibility. In rich mode, the inline-append fallback is
 			// suppressed — the rich card renders an equivalent statusFooter
 			// through BuildRichCard, so re-appending the legacy footer here
 			// would double-print model/ctx/workdir into the card body.
@@ -7705,13 +7704,34 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 			parts = append(parts, dir)
 		}
 	}
-	// A workdir alone is not a useful status signal (see #701), so suppress
-	// the entire footer unless at least one status segment from line 1 is
-	// present.
-	if !hasStatus {
+	// A workdir alone is not a useful status signal (see #701). A concrete
+	// session ID remains useful even when model/context indicators are hidden.
+	sessionLine := e.replyFooterSessionID(session)
+	if !hasStatus && sessionLine == "" {
 		return ""
 	}
-	return strings.Join(parts, " · ")
+	return joinNonEmptyFooterLines(strings.Join(parts, " · "), sessionLine)
+}
+
+func (e *Engine) replyFooterSessionID(session AgentSession) string {
+	if session == nil {
+		return ""
+	}
+	id := strings.TrimSpace(session.CurrentSessionID())
+	if id == "" || id == ContinueSession {
+		return ""
+	}
+	return e.i18n.Tf(MsgReplyFooterSessionID, id)
+}
+
+func joinNonEmptyFooterLines(lines ...string) string {
+	var nonEmpty []string
+	for _, line := range lines {
+		if line != "" {
+			nonEmpty = append(nonEmpty, line)
+		}
+	}
+	return strings.Join(nonEmpty, "\n")
 }
 
 // composeRichStatusFooter assembles the multi-line statusFooter passed to
@@ -7720,6 +7740,7 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 //	line 1: ⏱ <i18n elapsed>                                  (subject to e.replyFooterEnabled)
 //	line 2: model · out N · in N cw N cr N · ctx N%           (subject to e.showContextIndicator)
 //	line 3: <workdir>                                         (subject to e.showWorkdirIndicator)
+//	line 4: <full agent session ID, when available>
 //
 // Returns "" when the master replyFooterEnabled toggle is off, or while the
 // turn is still streaming (footer represents finalized turn metadata —
@@ -7763,6 +7784,9 @@ func (e *Engine) composeRichStatusFooter(streaming bool, turnStart time.Time, ag
 		if dir := replyFooterWorkDir(session, agent, workspaceDir); dir != "" {
 			lines = append(lines, dir)
 		}
+	}
+	if sessionLine := e.replyFooterSessionID(session); sessionLine != "" {
+		lines = append(lines, sessionLine)
 	}
 
 	return strings.Join(lines, "\n")
@@ -8111,10 +8135,11 @@ func replyFooterHomeRelativePath(path, home string) (string, bool) {
 }
 
 // buildClaudeStatusLineFooter renders a CCD-statusline-style footer for the
-// reply, composed of two lines:
+// reply, composed of model/context, workspace and session ID lines:
 //
 //	line 1 (controlled by show_context_indicator): <model id> · [effort:X ·] out N · in N cw N cr N · ctx N%
 //	line 2 (controlled by show_workdir_indicator): <workspace dir>
+//	line 3: <full agent session ID, when available>
 //
 // Returns "" if reply_footer is disabled, or if the active session does not
 // expose per-turn cache-token data (i.e. this is not claudecode or no result
@@ -8175,16 +8200,7 @@ func (e *Engine) buildClaudeStatusLineFooter(agent Agent, session AgentSession, 
 		line2 = replyFooterWorkDir(session, agent, workspaceDir)
 	}
 
-	switch {
-	case line1 != "" && line2 != "":
-		return line1 + "\n" + line2
-	case line1 != "":
-		return line1
-	case line2 != "":
-		return line2
-	default:
-		return ""
-	}
+	return joinNonEmptyFooterLines(line1, line2, e.replyFooterSessionID(session))
 }
 
 // sendChunksWithStatusFooter splits body across maxPlatformMessageLen and sends

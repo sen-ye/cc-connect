@@ -142,6 +142,8 @@ level = "info" # debug, info, warn, error
 #                                # 在助手回复末尾显示「[ctx: ~N%]」上下文占用提示（默认 true 显示）
 # reply_footer = true            # Show Codex-like footer on assistant replies (default: true)
 #                                # 在助手回复底部显示类似 Codex 的状态行（默认 true 显示）
+# Session IDs are added automatically to enabled reply footers once available.
+# 状态栏开启时，程序会自动显示已获取的完整 agent 会话 ID。
 # hide_agent_footer = false      # Strip standalone model/token footer lines emitted by agents (default: false)
 #                                # 过滤 agent 自己混入正文的模型/token 统计 footer 行（默认 false 不过滤）
 

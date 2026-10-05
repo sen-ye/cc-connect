@@ -2175,6 +2175,65 @@ func TestCUJ_H3_SharedSessionLinkedToIntegration(t *testing.T) {
 // Covered by platform/feishu/card_test.go and release-gate TestCC_CARD_01_rich.
 func TestCUJ_I1_RichCardLinkedToPlatformAndIntegration(t *testing.T) {
 	t.Log("CUJ-I1: covered by platform/feishu/card_test.go + release-gate TestCC_CARD_01_rich")
+	t.Run("SessionIDAfterNewAndSwitch", testSessionIDAfterNewAndSwitch)
+}
+
+func testSessionIDAfterNewAndSwitch(t *testing.T) {
+	ids := []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
+	var next int
+	agent := &controllableAgent{
+		startSessionFn: func(_ context.Context, resumeID string) (AgentSession, error) {
+			id := resumeID
+			if id == "" {
+				if next >= len(ids) {
+					return nil, fmt.Errorf("unexpected new session")
+				}
+				id = ids[next]
+				next++
+			}
+			return &sessionFooterAgentSession{cujAgentSession: newCUJAgentSession(), id: id}, nil
+		},
+		listFn: func() ([]AgentSessionInfo, error) {
+			return []AgentSessionInfo{{ID: ids[0], Summary: "first"}, {ID: ids[1], Summary: "second"}}, nil
+		},
+	}
+	p := &sessionFooterPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	e.SetReplyFooterEnabled(true)
+	e.SetDisplayConfig(DisplayCfg{Mode: "full", CardMode: "rich"})
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	const key = "test:session-footer"
+	send := func(text string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Content: text, ReplyCtx: "ctx"})
+	}
+	awaitID := func(want, unwanted string) {
+		t.Helper()
+		env.waitFor("final card for "+want, 2*time.Second, func() bool {
+			for _, card := range p.getSent() {
+				if strings.HasPrefix(card, "card-status:done\n") && strings.Contains(card, "Session ID: "+want) {
+					if strings.Count(card, want) != 1 || strings.Contains(card, unwanted) {
+						t.Fatalf("card has duplicate or stale session IDs: %s", card)
+					}
+					return true
+				}
+			}
+			return false
+		})
+	}
+
+	// Five user actions: chat, /new, chat, /switch, chat. The fake agent only
+	// says "ok"; every visible ID must therefore come from cc-connect itself.
+	send("first task")
+	awaitID(ids[0], ids[1])
+	p.clearSent()
+	send("/new second")
+	send("second task")
+	awaitID(ids[1], ids[0])
+	p.clearSent()
+	send("/switch " + ids[0])
+	send("continue first task")
+	awaitID(ids[0], ids[1])
 }
 
 // CUJ-I2 · Legacy card mode for backwards-compatibility.

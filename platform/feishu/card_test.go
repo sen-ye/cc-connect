@@ -268,7 +268,7 @@ func TestRenderCardMap_InjectsSessionKeyIntoCallbacks(t *testing.T) {
 
 func TestBuildCardJSONWithStatusFooter(t *testing.T) {
 	body := "Hello world"
-	footer := "Opus 4.7 · ↑ 1 ↓ 168 · 4%\n~/path/to/ws"
+	footer := "Opus 4.7 · ↑ 1 ↓ 168 · 4%\n~/path/to/ws\nSession ID: 01234567-89ab-4cde-8f01-23456789abcd"
 	jsonStr := buildCardJSONWithStatusFooter(body, footer)
 
 	var card map[string]any
@@ -310,5 +310,29 @@ func TestBuildCardJSONWithStatusFooter_EmptyFooterFallsThrough(t *testing.T) {
 	// whitespace-only footer also falls through
 	if got := buildCardJSONWithStatusFooter(body, "   \n  "); got != b {
 		t.Errorf("whitespace footer should fall through to buildCardJSON")
+	}
+}
+
+func TestBuildRichCard_SessionIDFooterRemainsComplete(t *testing.T) {
+	const sessionLine = "会话 ID: 01234567-89ab-4cde-8f01-23456789abcd"
+	encoded := buildRichCard(core.CardStatusDone, "", nil, "任务完成", false,
+		"gpt-6-astra\n/workspace/project\n"+sessionLine)
+	var card map[string]any
+	if err := json.Unmarshal([]byte(encoded), &card); err != nil {
+		t.Fatal(err)
+	}
+	body := card["body"].(map[string]any)
+	matched := 0
+	for _, element := range body["elements"].([]any) {
+		row := element.(map[string]any)
+		if row["content"] == sessionLine {
+			matched++
+			if row["tag"] != "markdown" || row["text_size"] != "notation" {
+				t.Fatalf("session ID should use footer styling: %#v", row)
+			}
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("full session ID footer rendered %d times, want once", matched)
 	}
 }

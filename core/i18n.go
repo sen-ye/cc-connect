@@ -214,6 +214,7 @@ const (
 	MsgNoToolsAllowed            MsgKey = "no_tools_allowed"
 	MsgCurrentTools              MsgKey = "current_tools"
 	MsgCurrentSession            MsgKey = "current_session"
+	MsgReplyFooterSessionID      MsgKey = "reply_footer_session_id"
 	MsgToolAuthNotSupported      MsgKey = "tool_auth_not_supported"
 	MsgToolAllowFailed           MsgKey = "tool_allow_failed"
 	MsgToolAllowedNew            MsgKey = "tool_allowed_new"
@@ -847,6 +848,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "📌 目前工作階段\n名稱: %s\n工作階段 ID: %s\n本機訊息數: %d",
 		LangJapanese:           "📌 現在のセッション\n名前: %s\nセッション ID: %s\nローカルメッセージ数: %d",
 		LangSpanish:            "📌 Sesión actual\nNombre: %s\nID de sesión: %s\nMensajes locales: %d",
+	},
+	MsgReplyFooterSessionID: {
+		LangEnglish:            "Session ID: %s",
+		LangChinese:            "会话 ID: %s",
+		LangTraditionalChinese: "工作階段 ID: %s",
+		LangJapanese:           "セッション ID: %s",
+		LangSpanish:            "ID de sesión: %s",
 	},
 	MsgToolAuthNotSupported: {
 		LangEnglish:            "This agent does not support tool authorization.",
