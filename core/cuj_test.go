@@ -1211,6 +1211,8 @@ func TestCUJ_A2_MultiTurnAgentReceivesHistory(t *testing.T) {
 // CUJ-A3 · User sends text with an image, an image alone, then text alone.
 // Each turn receives a reply, and only that turn's images reach the agent.
 func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
+	t.Run("PsSupplementReachesRunningTurn", testCUJImageSupplement)
+
 	env := newCUJEnv(t)
 	t.Cleanup(func() { _ = env.engine.Stop() })
 	turns := []struct {
@@ -1263,6 +1265,71 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 				t.Fatalf("turn %d image %d: got %#v, want %#v", i+1, j+1, got[j], want)
 			}
 		}
+	}
+}
+
+// A supplement containing an image must reach the in-flight task, while a
+// subsequent ordinary message waits for the next turn without reusing it.
+func testCUJImageSupplement(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newPsAttachmentSession()
+	agent := &controllableAgent{nextSession: sess}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: p}
+	key := "test:ps-image-journey"
+	nextCall := func() psMessage {
+		t.Helper()
+		select {
+		case call := <-sess.calls:
+			return call
+		case <-time.After(time.Second):
+			t.Fatalf("agent received no input; user saw %v", p.getSent())
+			return psMessage{}
+		}
+	}
+
+	// User action 1: start a task and leave it running.
+	e.ReceiveMessage(p, &Message{SessionKey: key, MessageID: "initial", Content: "start task", ReplyCtx: "ctx"})
+	nextCall()
+
+	// User action 2: append a screenshot to that task.
+	e.ReceiveMessage(p, &Message{
+		SessionKey: key, MessageID: "supplement", Content: "/ps use this screenshot", ReplyCtx: "ctx",
+		Images: []ImageAttachment{{MimeType: "image/png", FileName: "screenshot.png", Data: []byte("screenshot")}},
+	})
+	if !env.sentContains(e.i18n.T(MsgPsSent)) || env.sentContains(e.i18n.T(MsgMessageQueued)) {
+		t.Fatalf("image supplement should be acknowledged immediately, not queued: %v", p.getSent())
+	}
+	supplement := nextCall()
+	answer := "Current task received no screenshot"
+	if supplement.text == "use this screenshot" && len(supplement.images) == 1 && supplement.images[0].FileName == "screenshot.png" {
+		answer = "Current task used screenshot.png"
+	}
+
+	// User action 3: an ordinary follow-up must still wait for the task.
+	e.ReceiveMessage(p, &Message{SessionKey: key, MessageID: "followup", Content: "next task", ReplyCtx: "ctx"})
+	if !env.sentContains(e.i18n.T(MsgMessageQueued)) {
+		t.Fatalf("ordinary follow-up was not queued: %v", p.getSent())
+	}
+	sess.events <- Event{Type: EventResult, Content: answer, Done: true}
+	env.waitFor("current task used its supplement", time.Second, func() bool { return env.sentContains("Current task used screenshot.png") })
+
+	followup := nextCall()
+	answer = "Unexpected image or supplement carried into next turn"
+	if followup.text == "next task" && len(followup.images) == 0 {
+		answer = "Next task received no previous screenshot"
+	}
+	sess.events <- Event{Type: EventResult, Content: answer, Done: true}
+	env.waitFor("follow-up without the old image", time.Second, func() bool { return env.sentContains("Next task received no previous screenshot") })
+	queuedReplies := 0
+	for _, reply := range p.getSent() {
+		if reply == e.i18n.T(MsgMessageQueued) {
+			queuedReplies++
+		}
+	}
+	if queuedReplies != 1 {
+		t.Fatalf("only the ordinary follow-up should be queued, got %d receipts", queuedReplies)
 	}
 }
 

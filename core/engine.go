@@ -3132,7 +3132,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
-	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
+	if strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
 		}
@@ -6854,7 +6854,7 @@ var builtinCommands = []struct {
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	text := strings.TrimSpace(strings.Join(args, " "))
-	if text == "" {
+	if text == "" && len(msg.Images) == 0 && len(msg.Files) == 0 {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsEmpty))
 		return
 	}
@@ -6875,7 +6875,7 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
-	if err := state.agentSession.Send(text, "", nil, nil); err != nil {
+	if err := state.agentSession.Send(text, msg.MessageID, msg.Images, msg.Files); err != nil {
 		slog.Error("ps: send failed", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
 		return
@@ -6950,7 +6950,7 @@ func splitCommandArgs(s string) []string {
 			inSingle = !inSingle
 		case c == '"' && !inSingle:
 			inDouble = !inDouble
-		case (c == ' ' || c == '\t') && !inSingle && !inDouble:
+		case (c == ' ' || c == '\t' || c == '\n' || c == '\r') && !inSingle && !inDouble:
 			if cur.Len() > 0 {
 				tokens = append(tokens, cur.String())
 				cur.Reset()
@@ -6971,6 +6971,13 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	args := parts[1:]
 
 	cmdID := matchPrefix(cmd, builtinCommands)
+
+	// Image captions normally belong to the agent. /ps (including aliases)
+	// explicitly supplements a running task, so keep its attachments on the
+	// command path instead of placing the whole message in the next-turn queue.
+	if len(msg.Images) > 0 && cmdID != "ps" {
+		return false
+	}
 
 	// Resolve effective disabled commands: role-based if available, else project-level
 	e.userRolesMu.RLock()
