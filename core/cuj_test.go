@@ -2316,6 +2316,47 @@ func TestCUJ_I4_StreamingToggleLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I4: covered by release-gate TestCC_STREAM_01_off + TestCC_STREAM_02_on + core/streaming_test.go (14 unit tests)")
 }
 
+type referenceRenderCUJAgent struct{ *cujAgent }
+
+func (a *referenceRenderCUJAgent) Name() string { return "codex" }
+
+// CUJ-I5: across three replies, local files remain distinct, report values
+// remain readable, and the user can copy commands and web links unchanged.
+func TestCUJ_I5_LocalReferencesPreserveReplyContent(t *testing.T) {
+	platform := &stubPlatformEngine{n: "feishu"}
+	agent := &referenceRenderCUJAgent{cujAgent: &cujAgent{}}
+	engine := NewEngine("references", agent, []Platform{platform}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = engine.Stop() })
+	engine.SetReferenceConfig(ReferenceRenderCfg{
+		NormalizeAgents: []string{"codex"}, RenderPlatforms: []string{"feishu"},
+		DisplayPath: "basename", MarkerStyle: "emoji", EnclosureStyle: "code",
+	})
+	env := &cujEnv{t: t, engine: engine, plat: platform, agent: agent.cujAgent}
+	replies := []struct{ input, want string }{
+		{"`a.go` b.go c.go", "📄 `a.go` 📄 `b.go` 📄 `c.go`"},
+		{"参考 `report.md`: 23.34 9/28 170,851.78", "参考 📄 `report.md`: 23.34 9/28 170,851.78"},
+		{"Run `/new investigate` then https://example.com/one https://example.com/two", "Run `/new investigate` then https://example.com/one https://example.com/two"},
+	}
+	for i, reply := range replies {
+		if i == 0 {
+			agent.setNextSessionEvents([]Event{{Type: EventResult, Content: reply.input, Done: true}}, 0)
+		} else {
+			agent.mu.Lock()
+			session := agent.sessions[len(agent.sessions)-1]
+			agent.mu.Unlock()
+			session.mu.Lock()
+			session.reply = reply.input
+			session.mu.Unlock()
+		}
+		engine.ReceiveMessage(platform, &Message{
+			SessionKey: "feishu:reader", Platform: "feishu", UserID: "reader", ReplyCtx: "reader",
+			MessageID: fmt.Sprintf("reference-%d", i), Content: fmt.Sprintf("question %d", i),
+		})
+		env.waitFor("reference reply", 2*time.Second, func() bool { return env.sentContains(reply.want) })
+		env.waitFor("turn finished", 2*time.Second, func() bool { return !engine.sessions.GetOrCreateActive("feishu:reader").Busy() })
+	}
+}
+
 // ===========================================================================
 // CUJ-H2 · Two platforms attached to the same engine handle concurrent
 // messages without bleeding state into each other.
