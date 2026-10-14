@@ -171,6 +171,29 @@ func (a *Agent) GetWorkDir() string {
 	return a.workDir
 }
 
+// WorkspaceAgentOptionSnapshot keeps the launch/authentication environment
+// when core creates a workspace agent. Per-conversation env is not inherited.
+func (a *Agent) WorkspaceAgentOptionSnapshot() map[string]any {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	env := make(map[string]string, len(a.configEnv))
+	for _, entry := range a.configEnv {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			env[key] = value
+		}
+	}
+	opts := map[string]any{
+		"backend": a.backend, "app_server_url": a.appServerURL,
+		"codex_home": a.codexHome, "model": a.model, "mode": a.mode,
+		"reasoning_effort": a.reasoningEffort, "system_prompt": a.systemPrompt,
+		"append_system_prompt": a.appendPrompt, "env": env,
+	}
+	if a.cmd != "" {
+		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
+	}
+	return opts
+}
+
 func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -470,7 +493,22 @@ func (a *Agent) SetSessionEnv(env []string) {
 }
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, nil)
+}
+
+// StartSessionWithProvider snapshots a conversation's binding without changing
+// the default provider shared by other conversations.
+func (a *Agent) StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, &providerName)
+}
+
+func (a *Agent) startSession(ctx context.Context, sessionID string, providerName *string) (core.AgentSession, error) {
 	a.mu.Lock()
+	provider, err := a.sessionProviderLocked(providerName)
+	if err != nil {
+		a.mu.Unlock()
+		return nil, err
+	}
 	mode := a.mode
 	model := a.model
 	reasoningEffort := a.reasoningEffort
@@ -480,42 +518,54 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	systemPrompt := a.systemPrompt
 	appendPrompt := a.appendPrompt
 	cliBin := a.cmd
-	cliExtraArgs := a.cliExtraArgs
+	cliExtraArgs := append([]string(nil), a.cliExtraArgs...)
 	workDir := a.workDir
 	// Order matters for MergeEnv override semantics (later wins):
 	//   1. configEnv — static env from [projects.agent.options.env]
 	//   2. providerEnv — per-provider keys (OPENAI_API_KEY etc.)
 	//   3. sessionEnv — runtime overrides from /env or admin actions
 	extraEnv := append([]string(nil), a.configEnv...)
-	extraEnv = append(extraEnv, a.providerEnvLocked()...)
-	extraEnv = append(extraEnv, a.sessionEnv...)
-	var baseURL string
-	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
-		if m := a.providers[a.activeIdx].Model; m != "" {
-			model = m
+	provName := ""
+	if provider != nil {
+		extraEnv = append(extraEnv, providerEnvironment(*provider)...)
+		if provider.Model != "" {
+			model = provider.Model
 		}
-		baseURL = a.providers[a.activeIdx].BaseURL
+		provName = provider.Name
 	}
-	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
+	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.Unlock()
 
-	if provName != "" {
-		if err := ensureCodexProviderConfig(codexHome, provName, baseURL, provWireAPI, provHeaders); err != nil {
-			slog.Warn("codex: failed to write provider config", "provider", provName, "error", err)
-		}
-		if err := ensureCodexAuth(codexHome, provAPIKey); err != nil {
-			slog.Warn("codex: failed to write auth.json", "provider", provName, "error", err)
-		}
+	cfg, err := prepareProviderRuntime(provider, extraEnv)
+	if err != nil {
+		return nil, err
 	}
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		session, err := newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, cfg.baseURL, provName, cfg.env, codexHome, systemPrompt, appendPrompt, cfg.proxy, cfg.args)
+		if err != nil {
+			cfg.proxy.Close()
+			return nil, err
+		}
+		if cfg.proxy != nil {
+			context.AfterFunc(session.ctx, cfg.proxy.Close)
+		}
+		return session, nil
 	}
 	if codexHome != "" {
-		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
+		cfg.env = append(cfg.env, "CODEX_HOME="+codexHome)
 	}
 
-	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
+	session, err := newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, cfg.baseURL, cfg.env, provName, systemPrompt, appendPrompt, cfg.args)
+	if err != nil {
+		cfg.proxy.Close()
+		return nil, err
+	}
+	session.providerProxy = cfg.proxy
+	if cfg.proxy != nil {
+		context.AfterFunc(session.ctx, cfg.proxy.Close)
+	}
+	return session, nil
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -734,7 +784,18 @@ func (a *Agent) GlobalMemoryFile() string {
 func (a *Agent) SetProviders(providers []core.ProviderConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.providers = providers
+	activeName := ""
+	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
+		activeName = a.providers[a.activeIdx].Name
+	}
+	a.providers = make([]core.ProviderConfig, len(providers))
+	a.activeIdx = -1
+	for i, provider := range providers {
+		a.providers[i] = cloneProvider(provider)
+		if activeName != "" && provider.Name == activeName {
+			a.activeIdx = i
+		}
+	}
 }
 
 func (a *Agent) SetActiveProvider(name string) bool {
@@ -761,7 +822,7 @@ func (a *Agent) GetActiveProvider() *core.ProviderConfig {
 	if a.activeIdx < 0 || a.activeIdx >= len(a.providers) {
 		return nil
 	}
-	p := a.providers[a.activeIdx]
+	p := cloneProvider(a.providers[a.activeIdx])
 	return &p
 }
 
@@ -769,7 +830,9 @@ func (a *Agent) ListProviders() []core.ProviderConfig {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	result := make([]core.ProviderConfig, len(a.providers))
-	copy(result, a.providers)
+	for i, provider := range a.providers {
+		result[i] = cloneProvider(provider)
+	}
 	return result
 }
 
@@ -777,7 +840,10 @@ func (a *Agent) providerEnvLocked() []string {
 	if a.activeIdx < 0 || a.activeIdx >= len(a.providers) {
 		return nil
 	}
-	p := a.providers[a.activeIdx]
+	return providerEnvironment(a.providers[a.activeIdx])
+}
+
+func providerEnvironment(p core.ProviderConfig) []string {
 	var env []string
 	if p.APIKey != "" {
 		env = append(env, "OPENAI_API_KEY="+p.APIKey)
@@ -789,22 +855,6 @@ func (a *Agent) providerEnvLocked() []string {
 		env = append(env, k+"="+v)
 	}
 	return env
-}
-
-// activeProviderCodexConfig returns Codex-specific config for the active provider.
-// Returns non-empty name when the provider has codex config (wire_api, headers)
-// OR when it has a BaseURL (third-party provider needing auth.json).
-func (a *Agent) activeProviderCodexConfig() (name string, apiKey string, wireAPI string, headers map[string]string) {
-	if a.activeIdx < 0 || a.activeIdx >= len(a.providers) {
-		return
-	}
-	p := a.providers[a.activeIdx]
-	hasCodexConfig := p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0
-	isThirdParty := p.BaseURL != "" && p.APIKey != ""
-	if !hasCodexConfig && !isThirdParty {
-		return
-	}
-	return p.Name, p.APIKey, p.CodexWireAPI, p.CodexHTTPHeaders
 }
 
 // PermissionModes returns the supported codex permission modes.

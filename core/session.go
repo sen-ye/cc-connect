@@ -36,10 +36,13 @@ type Session struct {
 	// `/provider switch` (the agent_session_id survives on disk while the
 	// in-memory active provider does not). Empty means "no explicit choice
 	// — use whatever the agent's default is".
-	ActiveProvider string         `json:"active_provider,omitempty"`
-	History        []HistoryEntry `json:"history"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ActiveProvider string `json:"active_provider,omitempty"`
+	// ProviderBound distinguishes a pinned CLI default (empty ActiveProvider)
+	// from a legacy session that has not selected a provider yet.
+	ProviderBound bool           `json:"provider_bound,omitempty"`
+	History       []HistoryEntry `json:"history"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 	// LastUserActivity records when a real user message was last received.
 	// Unlike UpdatedAt (bumped by every session.Unlock including heartbeats and
 	// unsolicited agent output), this field is only updated when the engine
@@ -289,6 +292,45 @@ func (s *Session) GetActiveProvider() string {
 	return s.ActiveProvider
 }
 
+// ProviderBinding returns the persisted per-session provider choice.
+func (s *Session) ProviderBinding() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ActiveProvider, s.ProviderBound
+}
+
+// BindDefaultProvider snapshots the default before the first process starts.
+// Legacy sessions with a native ID retain the CLI's resume configuration.
+func (s *Session) BindDefaultProvider(defaultName string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ProviderBound {
+		return s.ActiveProvider, false
+	}
+	if s.ActiveProvider == "" && s.AgentSessionID == "" {
+		s.ActiveProvider = defaultName
+	}
+	s.ProviderBound = true
+	return s.ActiveProvider, true
+}
+
+// SelectProvider permits account changes only before a conversation starts.
+// Re-selecting the same binding is harmless, including while a turn runs.
+func (s *Session) SelectProvider(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ActiveProvider == name && (s.ProviderBound || name != "") {
+		s.ProviderBound = true
+		return true
+	}
+	if s.busy || s.AgentSessionID != "" || len(s.History) != 0 {
+		return false
+	}
+	s.ActiveProvider = name
+	s.ProviderBound = true
+	return true
+}
+
 // SetAgentSessionID atomically sets the agent session ID and agent type.
 // The ContinueSession sentinel is never persisted — it is only used transiently
 // when starting an agent (see engine); storing it on disk breaks resume (#255).
@@ -386,6 +428,7 @@ type sessionSnapshot struct {
 // SessionManager supports multiple named sessions per user with active-session tracking.
 // It can persist state to a JSON file and reload on startup.
 type SessionManager struct {
+	saveMu        sync.Mutex // serialize snapshots and writes from concurrent conversations
 	mu            sync.RWMutex
 	sessions      map[string]*Session
 	activeSession map[string]string
@@ -735,6 +778,8 @@ func (sm *SessionManager) saveLocked() {
 	if sm.storePath == "" {
 		return
 	}
+	sm.saveMu.Lock()
+	defer sm.saveMu.Unlock()
 
 	// Build a deep-copy snapshot to avoid racing with concurrent Session mutations.
 	snapSessions := make(map[string]*Session, len(sm.sessions))
@@ -750,6 +795,8 @@ func (sm *SessionManager) saveLocked() {
 			Name:                s.Name,
 			AgentSessionID:      agentSID,
 			AgentType:           s.AgentType,
+			ActiveProvider:      s.ActiveProvider,
+			ProviderBound:       s.ProviderBound,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
 			History:             append([]HistoryEntry(nil), s.History...),
 			CreatedAt:           s.CreatedAt,

@@ -429,8 +429,12 @@ type ProviderConfig struct {
 	Thinking string            // override thinking type sent to this provider ("disabled", "enabled", or "" for no rewrite)
 	Env      map[string]string // arbitrary extra env vars (e.g. CLAUDE_CODE_USE_BEDROCK=1)
 	// Codex-specific provider config (maps to Codex model_providers.<name>)
-	CodexWireAPI     string            // wire API format (e.g. "responses")
-	CodexHTTPHeaders map[string]string // custom HTTP headers
+	CodexWireAPI         string            // wire API format (e.g. "responses")
+	CodexHTTPHeaders     map[string]string // custom HTTP headers
+	CodexEnvKey          string            // environment variable containing the API key
+	CodexEnvHTTPHeaders  map[string]string // HTTP header name -> environment variable
+	CodexProxyURL        string            // optional fixed HTTP(S) network proxy for this provider
+	CodexModelCatalogURL string            // optional full URL of the Codex-native model catalog
 }
 
 // ProviderSwitcher is an optional interface for agents that support multiple API providers.
@@ -439,6 +443,14 @@ type ProviderSwitcher interface {
 	SetActiveProvider(name string) bool
 	GetActiveProvider() *ProviderConfig
 	ListProviders() []ProviderConfig
+}
+
+// SessionProviderStarter starts a session with an explicit provider without
+// changing the agent's default or other sessions' credentials. An empty name
+// selects the CLI's own configuration. Implementations must fail if a named
+// provider is unavailable rather than falling back to a different account.
+type SessionProviderStarter interface {
+	StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (AgentSession, error)
 }
 
 // MemoryFileProvider is an optional interface for agents that support

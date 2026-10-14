@@ -1732,6 +1732,22 @@ app_secret = "your-feishu-app-secret"
 # # Active provider / 当前激活的 provider
 # # provider = "openai"
 #
+# Codex conversations can bind an API profile before the first task:
+# /provider switch api-a (or select it in the /provider card).
+# Existing conversations keep their binding; use /new to select another key.
+# 会话第一条任务前选择 API 配置；已有会话保留绑定，换 key 请先 /new。
+# Details / 详细用法: docs/codex-session-providers.md
+#
+# [[projects.agent.providers]]
+# name = "api-a"
+# base_url = "https://api-a.example/v1" # API endpoint or relay / API 地址或中转站
+# [projects.agent.providers.codex]
+# env_key = "CODEX_API_A_KEY"          # key environment variable / 保存 key 的环境变量名
+# wire_api = "responses"
+# proxy_url = "${CODEX_API_A_PROXY}"   # optional fixed HTTP(S) proxy / 可选，和此 API 固定绑定的网络代理
+# [projects.agent.providers.codex.env_http_headers]
+# x-session-id = "AIDP_SESSION_ID"     # only if required by your relay / 中转站需要时配置
+#
 # [[projects.agent.providers]]
 # name = "openai"
 # api_key = "sk-xxx"

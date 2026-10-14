@@ -143,6 +143,8 @@ type appServerRequestUserInputAnswer struct {
 type appServerSession struct {
 	cliBin         string
 	cliExtraArgs   []string
+	providerArgs   []string
+	providerProxy  *providerProxy
 	url            string
 	workDir        string
 	model          string
@@ -193,10 +195,11 @@ const (
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
 )
 
-func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string) (*appServerSession, error) {
+func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string, proxy *providerProxy, providerArgs ...[]string) (*appServerSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
 		cliBin:           cliBin,
+		providerProxy:    proxy,
 		cliExtraArgs:     append([]string(nil), cliExtraArgs...),
 		url:              url,
 		workDir:          workDir,
@@ -216,6 +219,9 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		preambleSent:     resumeID != "" && resumeID != core.ContinueSession,
 	}
 	s.alive.Store(true)
+	if len(providerArgs) > 0 {
+		s.providerArgs = append([]string(nil), providerArgs[0]...)
+	}
 
 	if err := s.connect(); err != nil {
 		cancel()
@@ -254,6 +260,9 @@ func appServerListenURL(url string) string {
 
 func (s *appServerSession) connect() error {
 	args := []string{"app-server"}
+	// App-server owns its own -c flags; root CLI overrides before the
+	// subcommand are not loaded by the app-server configuration builder.
+	args = append(args, s.providerArgs...)
 	// With url "stdio://" the session speaks JSON-RPC over the stdio pipes.
 	// Pass no --listen flag in that case: on codex 0.152+ a --listen value
 	// (including ws://) switches the app-server to serve the protocol over
@@ -390,6 +399,10 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	params := map[string]any{
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
+	}
+	// Keep the conversation's explicit provider on both start and resume.
+	if s.modelProvider != "" {
+		params["modelProvider"] = s.modelProvider
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
@@ -989,6 +1002,7 @@ func (s *appServerSession) Alive() bool {
 }
 
 func (s *appServerSession) Close() error {
+	defer s.providerProxy.Close()
 	s.alive.Store(false)
 	s.cancel()
 
@@ -1109,6 +1123,7 @@ func (s *appServerSession) stderrLoop(r io.Reader) {
 
 func (s *appServerSession) waitLoop() {
 	defer s.wg.Done()
+	defer s.providerProxy.Close()
 
 	s.procMu.Lock()
 	cmd := s.cmd

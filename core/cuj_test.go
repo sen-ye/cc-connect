@@ -1916,7 +1916,69 @@ func TestCUJ_E6_TimerSurvivesRestart(t *testing.T) {
 // CUJ-F1 · /provider switches LLM provider for the next message — provider
 // management lives outside core/engine.go (per-agent). Linked.
 func TestCUJ_F1_ProviderSwitchLinkedToAgent(t *testing.T) {
-	t.Log("CUJ-F1: provider switching is per-agent; covered by agent/*_test.go provider tests")
+	t.Run("IndependentConversationBindingsSurviveRestart", func(t *testing.T) {
+		root := t.TempDir()
+		p := &stubPlatformEngine{n: "test"}
+		newEngine := func(defaultName string) *Engine {
+			e := NewEngine("test", newProviderBindingTestAgent(defaultName), []Platform{p}, filepath.Join(root, "sessions.json"), LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			return e
+		}
+		e := newEngine("key-a")
+		send := func(topic, content, want string) {
+			t.Helper()
+			p.clearSent()
+			e.ReceiveMessage(p, &Message{SessionKey: "test:" + topic, Platform: "test", UserID: "user", Content: content, ReplyCtx: topic})
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if strings.Contains(strings.Join(p.getSent(), "\n"), want) && !e.sessions.GetOrCreateActive("test:"+topic).Busy() {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			t.Fatalf("%s: %q => %v; want %q", topic, content, p.getSent(), want)
+		}
+		send("alpha", "/provider switch key-a", "bound to **key-a**")
+		send("alpha", "remember alpha", "API=key-a")
+		send("beta", "/provider switch key-b", "bound to **key-b**")
+		send("beta", "remember beta", "API=key-b")
+		send("alpha", "/provider current", "**key-a**")
+		send("alpha", "/provider switch key-b", "already started")
+		send("alpha", "/provider clear", "already started")
+		send("alpha", "/history", "remember alpha")
+		send("alpha", "continue alpha", "API=key-a")
+		if err := e.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		e = newEngine("key-b")
+		send("alpha", "after restart alpha", "API=key-a")
+		send("beta", "after restart beta", "API=key-b")
+		send("alpha", "/new", "")
+		send("alpha", "/provider switch key-b", "bound to **key-b**")
+		send("alpha", "new conversation", "API=key-b")
+	})
+	t.Run("MissingBoundProviderDoesNotChangeAccountOrHistory", func(t *testing.T) {
+		env := newCUJEnv(t)
+		a := newProviderBindingTestAgent("key-a")
+		env.engine.agent = a
+		t.Cleanup(func() { _ = env.engine.Stop() })
+		env.userSends("alpha", "/provider switch key-a")
+		env.userSends("alpha", "keep original history")
+		env.waitFor("first answer", 3*time.Second, func() bool { return env.sentContains("API=key-a") && !env.activeSession("test:alpha").Busy() })
+		originalID := env.activeSession("test:alpha").GetAgentSessionID()
+		env.userSends("alpha", "/stop")
+		a.SetProviders([]ProviderConfig{{Name: "key-b"}})
+		env.plat.clearSent()
+		env.userSends("alpha", "resume with missing key")
+		env.waitFor("failure", 3*time.Second, func() bool {
+			return env.sentContains(env.engine.i18n.T(MsgFailedToStartAgentSession)) && !env.activeSession("test:alpha").Busy()
+		})
+		env.userSends("alpha", "/history")
+		env.waitFor("retained history", 3*time.Second, func() bool { return env.sentContains("keep original history") })
+		a.SetProviders([]ProviderConfig{{Name: "key-a"}, {Name: "key-b"}})
+		env.userSends("alpha", "retry after restoring key")
+		env.waitFor("same conversation", 3*time.Second, func() bool { return env.sentContains("API=key-a session=" + originalID) })
+	})
 }
 
 // CUJ-F2 · /model switches model — same pattern as F1, agent-managed.

@@ -2,7 +2,6 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +44,10 @@ func configToCoreProv(p config.ProviderConfig) core.ProviderConfig {
 	if p.Codex != nil {
 		cp.CodexWireAPI = p.Codex.WireAPI
 		cp.CodexHTTPHeaders = p.Codex.HTTPHeaders
+		cp.CodexEnvKey = p.Codex.EnvKey
+		cp.CodexEnvHTTPHeaders = p.Codex.EnvHTTPHeaders
+		cp.CodexProxyURL = p.Codex.ProxyURL
+		cp.CodexModelCatalogURL = p.Codex.ModelCatalogURL
 	}
 	for _, m := range p.Models {
 		cp.Models = append(cp.Models, core.ModelOption{Name: m.Model})
@@ -204,58 +207,31 @@ func TestIntegration_Codex_ProviderSwitch_SessionArgs(t *testing.T) {
 	}
 }
 
-func TestIntegration_Codex_ProviderConfig_WrittenCorrectly(t *testing.T) {
+func TestIntegration_Codex_ProviderConfig_ProcessOverrides(t *testing.T) {
 	cfg := skipIfNoConfig(t)
-
 	name, providers, _, _ := findCodexProject(cfg)
 	if name == "" {
 		t.Skip("no codex project with providers found")
 	}
-
-	for _, prov := range providers {
-		t.Run(prov.Name, func(t *testing.T) {
-			if prov.BaseURL == "" || prov.APIKey == "" {
-				t.Skip("provider has no base_url or api_key")
-			}
-
-			home := filepath.Join(t.TempDir(), ".codex")
-
-			err := ensureCodexProviderConfig(home, prov.Name, prov.BaseURL, prov.CodexWireAPI, prov.CodexHTTPHeaders)
+	for _, provider := range providers {
+		t.Run(provider.Name, func(t *testing.T) {
+			a := &Agent{backend: "exec", codexHome: t.TempDir(), activeIdx: -1}
+			a.SetProviders([]core.ProviderConfig{provider})
+			session, err := a.StartSessionWithProvider(context.Background(), "", provider.Name)
 			if err != nil {
-				t.Fatalf("ensureCodexProviderConfig failed: %v", err)
+				t.Fatal(err)
 			}
-
-			cfgData, err := os.ReadFile(filepath.Join(home, "config.toml"))
-			if err != nil {
-				t.Fatalf("read config.toml: %v", err)
+			defer session.Close()
+			cs := session.(*codexSession)
+			if cs.modelProvider != provider.Name {
+				t.Fatal("wrong selected provider")
 			}
-			cfgContent := string(cfgData)
-
-			if !strings.Contains(cfgContent, `[model_providers.`+prov.Name+`]`) {
-				t.Errorf("config.toml missing provider section for %s", prov.Name)
+			if provider.APIKey != "" && envSliceToMap(cs.extraEnv)[providerAPIKeyEnv] != provider.APIKey {
+				t.Fatal("missing process-local credential")
 			}
-			if !strings.Contains(cfgContent, prov.BaseURL) {
-				t.Errorf("config.toml missing base_url %s", prov.BaseURL)
+			if _, err := os.Stat(filepath.Join(a.codexHome, "auth.json")); !os.IsNotExist(err) {
+				t.Fatal("unexpected shared auth write")
 			}
-
-			err = ensureCodexAuth(home, prov.APIKey)
-			if err != nil {
-				t.Fatalf("ensureCodexAuth failed: %v", err)
-			}
-
-			authData, err := os.ReadFile(filepath.Join(home, "auth.json"))
-			if err != nil {
-				t.Fatalf("read auth.json: %v", err)
-			}
-			var authMap map[string]any
-			if err := json.Unmarshal(authData, &authMap); err != nil {
-				t.Fatalf("parse auth.json: %v", err)
-			}
-			if authMap["OPENAI_API_KEY"] != prov.APIKey {
-				t.Error("OPENAI_API_KEY not written correctly to auth.json")
-			}
-
-			t.Logf("provider config written OK: name=%s wireAPI=%s", prov.Name, prov.CodexWireAPI)
 		})
 	}
 }

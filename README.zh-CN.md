@@ -556,6 +556,8 @@ cc-connect doctor user-isolation
 /provider switch <名称>     运行时切换 API Provider
 ```
 
+Codex 可在会话第一条任务前选择 API 配置，每个会话独立绑定 key、API 中转地址和可选的固定网络代理，恢复后沿用。已有会话换配置时会提示先 `/new`，不会清空原历史。详见[会话 API 配置](docs/codex-session-providers.md)。
+
 
 ### 🤖 模型选择
 

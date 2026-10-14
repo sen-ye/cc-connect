@@ -32,6 +32,8 @@ type codexSession struct {
 	modelProvider  string   // Codex model_provider name; passed as -c model_provider=<name>
 	cmd            string   // CLI binary, default "codex"
 	cliExtraArgs   []string // extra args from cmd, prepended before exec args
+	providerArgs   []string // process-local provider overrides, after the subcommand
+	providerProxy  *providerProxy
 	extraEnv       []string
 	promptPreamble string
 	events         chan core.Event
@@ -88,7 +90,7 @@ func prependCodexPromptPreamble(prompt string, preamble string) string {
 	return "Before answering, follow these project-level instructions for this cc-connect session. They are not user content.\n\n" + preamble + "\n\n---\n\nUser message:\n" + prompt
 }
 
-func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string) (*codexSession, error) {
+func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string, providerArgs ...[]string) (*codexSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &codexSession{
@@ -108,6 +110,9 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 		cmds:           make(map[*exec.Cmd]struct{}),
 	}
 	cs.alive.Store(true)
+	if len(providerArgs) > 0 {
+		cs.providerArgs = append([]string(nil), providerArgs[0]...)
+	}
 
 	if resumeID != "" && resumeID != core.ContinueSession {
 		cs.threadID.Store(resumeID)
@@ -229,6 +234,7 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 	} else {
 		args = []string{"exec", "--skip-git-repo-check"}
 	}
+	args = append(args, cs.providerArgs...)
 
 	// Mode → sandbox + approval mapping.
 	//
@@ -917,6 +923,7 @@ func (cs *codexSession) refreshContextUsageFromRollout() {
 }
 
 func (cs *codexSession) Close() error {
+	defer cs.providerProxy.Close()
 	cs.alive.Store(false)
 	cs.cancel()
 	done := make(chan struct{})

@@ -4349,7 +4349,9 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// agent_session_id, producing "model X does not exist" errors when
 	// the model name is sent to the wrong base_url
 	// (cc-connect internal task t-20260614-qp7xnl).
-	restoreActiveProviderFromSession(agent, session)
+	if _, scoped := agent.(SessionProviderStarter); !scoped {
+		restoreActiveProviderFromSession(agent, session)
+	}
 
 	// Resume only when we have a concrete saved agent session ID. If the session
 	// is unbound, force a fresh start instead of attaching to whichever CLI
@@ -4384,11 +4386,12 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 
 	isResume := startSessionID != ""
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	agentSession, err := startAgentSession(e.ctx, agent, session, sessions, startSessionID)
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
-		if startSessionID != "" {
+		_, scoped := agent.(SessionProviderStarter)
+		if startSessionID != "" && !scoped {
 			slog.Error("session resume failed, falling back to fresh session",
 				"session_key", sessionKey, "failed_session_id", startSessionID,
 				"error", err, "elapsed", startElapsed)
@@ -4397,7 +4400,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
 			startAt = time.Now()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, err = startAgentSession(e.ctx, agent, session, sessions, "")
 			startElapsed = time.Since(startAt)
 			if err == nil {
 				slog.Info("fresh session started after resume failure",
@@ -11059,11 +11062,11 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 
 	if len(args) == 0 {
 		if supportsCards(p) {
-			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard())
+			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard(msg.SessionKey))
 			return
 		}
 
-		current := switcher.GetActiveProvider()
+		current := providerForSession(switcher, sessions.GetOrCreateActive(msg.SessionKey))
 		providers := switcher.ListProviders()
 		if current == nil && len(providers) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderNone))
@@ -11105,7 +11108,7 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderListEmpty))
 			return
 		}
-		current := switcher.GetActiveProvider()
+		current := providerForSession(switcher, sessions.GetOrCreateActive(msg.SessionKey))
 		var sb strings.Builder
 		sb.WriteString(e.i18n.T(MsgProviderListTitle))
 		for _, prov := range providers {
@@ -11139,14 +11142,22 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 		e.switchProvider(p, msg, sessions, switcher, args[1])
 
 	case "current":
-		current := switcher.GetActiveProvider()
+		current := providerForSession(switcher, sessions.GetOrCreateActive(msg.SessionKey))
 		if current == nil {
+			if _, scoped := switcher.(SessionProviderStarter); scoped {
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSessionProviderDefault))
+				return
+			}
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderNone))
 			return
 		}
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderCurrent), current.Name))
 
 	case "clear", "reset", "none":
+		if response, handled := e.selectSessionProvider(switcher, sessions, msg.SessionKey, ""); handled {
+			e.reply(p, msg.ReplyCtx, response)
+			return
+		}
 		switcher.SetActiveProvider("")
 		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
 		{
@@ -11309,6 +11320,10 @@ func (e *Engine) resetAllSessions() {
 }
 
 func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManager, switcher ProviderSwitcher, name string) {
+	if response, handled := e.selectSessionProvider(switcher, sessions, msg.SessionKey, name); handled {
+		e.reply(p, msg.ReplyCtx, response)
+		return
+	}
 	if !switcher.SetActiveProvider(name) {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderNotFound), name))
 		return
@@ -12542,6 +12557,20 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	if prefix == "act" && cmd == "/model" {
 		return e.handleModelCardAction(args, sessionKey)
 	}
+	if prefix == "act" && cmd == "/provider" {
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if switcher, ok := agent.(ProviderSwitcher); ok && args != "" {
+			name := args
+			if name == "clear" {
+				name = ""
+			}
+			if response, handled := e.selectSessionProvider(switcher, sessions, sessionKey, name); handled {
+				card := e.renderProviderCard(sessionKey)
+				card.Elements = append([]CardElement{CardMarkdown{Content: response}}, card.Elements...)
+				return card
+			}
+		}
+	}
 
 	if prefix == "act" {
 		e.executeCardAction(cmd, args, sessionKey)
@@ -12581,7 +12610,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/history":
 		return e.renderHistoryCard(sessionKey)
 	case "/provider":
-		return e.renderProviderCard()
+		return e.renderProviderCard(sessionKey)
 	case "/provider/add", "/provider/add-other", "/provider/add-cancel":
 		return e.renderProviderAddCard(sessionKey)
 	case "/cron":
@@ -12808,7 +12837,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ProviderSwitcher)
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		switcher, ok := agent.(ProviderSwitcher)
 		if !ok {
 			return
 		}
@@ -12816,13 +12846,17 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if provName == "clear" {
 			provName = ""
 		}
+		if _, handled := e.selectSessionProvider(switcher, sessions, sessionKey, provName); handled {
+			return
+		}
 		if switcher.SetActiveProvider(provName) {
 			e.cleanupInteractiveState(interactiveKey)
-			s := e.sessions.GetOrCreateActive(sessionKey)
+			s := sessions.GetOrCreateActive(sessionKey)
 			s.SetAgentSessionID("", "")
 			s.ClearHistory()
-			e.sessions.Save()
-			if e.providerSaveFunc != nil {
+			s.SetActiveProvider(provName)
+			sessions.Save()
+			if sessions == e.sessions && e.providerSaveFunc != nil {
 				_ = e.providerSaveFunc(provName)
 			}
 		}
@@ -13894,13 +13928,19 @@ func (e *Engine) renderHistoryCard(sessionKey string) *Card {
 		Build()
 }
 
-func (e *Engine) renderProviderCard() *Card {
-	switcher, ok := e.agent.(ProviderSwitcher)
+func (e *Engine) renderProviderCard(sessionKeys ...string) *Card {
+	agent, sessions := e.agent, e.sessions
+	var session *Session
+	if len(sessionKeys) > 0 && sessionKeys[0] != "" {
+		agent, sessions = e.sessionContextForKey(sessionKeys[0])
+		session = sessions.GetOrCreateActive(sessionKeys[0])
+	}
+	switcher, ok := agent.(ProviderSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleProvider), "indigo", e.i18n.T(MsgProviderNotSupported))
 	}
 
-	current := switcher.GetActiveProvider()
+	current := providerForSession(switcher, session)
 	providers := switcher.ListProviders()
 
 	if current == nil && len(providers) == 0 {
@@ -13914,6 +13954,8 @@ func (e *Engine) renderProviderCard() *Card {
 	if current != nil {
 		body.WriteString(fmt.Sprintf(e.i18n.T(MsgProviderCurrent), current.Name))
 		body.WriteString("\n\n")
+	} else if _, scoped := switcher.(SessionProviderStarter); scoped {
+		body.WriteString(e.i18n.T(MsgSessionProviderDefault))
 	}
 
 	cb := NewCard().Title(e.i18n.T(MsgCardTitleProvider), "indigo").Markdown(body.String())
@@ -16392,16 +16434,17 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 	// Use the engine context (not the relay timeout context) so that the
 	// agent process is not killed when the relay deadline fires. The relay
 	// timeout only controls how long we *wait* for the response.
-	agentSession, err := agent.StartSession(e.ctx, session.GetAgentSessionID())
+	agentSession, err := startAgentSession(e.ctx, agent, session, sessions, session.GetAgentSessionID())
 	if err != nil {
 		// Resume failed — fall back to a fresh session so the relay is not
 		// permanently broken by a corrupted/stale session ID.
-		if session.GetAgentSessionID() != "" {
+		_, scoped := agent.(SessionProviderStarter)
+		if session.GetAgentSessionID() != "" && !scoped {
 			slog.Warn("relay: session resume failed, trying fresh session",
 				"relay_key", relaySessionKey, "error", err)
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, err = startAgentSession(e.ctx, agent, session, sessions, "")
 		}
 		if err != nil {
 			return "", fmt.Errorf("start relay session: %w", err)

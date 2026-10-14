@@ -1371,7 +1371,9 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 				mgmtError(w, http.StatusNotFound, fmt.Sprintf("provider not found: %s", provName))
 				return
 			}
-			e.resetAllSessions()
+			if _, scoped := e.agent.(SessionProviderStarter); !scoped {
+				e.resetAllSessions()
+			}
 			if e.providerSaveFunc != nil {
 				_ = e.providerSaveFunc(provName)
 			}

@@ -910,9 +910,12 @@ func main() {
 				Name: p.Name, APIKey: p.APIKey, BaseURL: p.BaseURL,
 				Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
 			}
-			if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 {
+			if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" {
 				cp.Codex = &config.CodexProviderConfig{
 					WireAPI: p.CodexWireAPI, HTTPHeaders: p.CodexHTTPHeaders,
+					EnvKey: p.CodexEnvKey, EnvHTTPHeaders: p.CodexEnvHTTPHeaders,
+					ProxyURL:        p.CodexProxyURL,
+					ModelCatalogURL: p.CodexModelCatalogURL,
 				}
 			}
 			return config.AddProviderToConfig(projName, cp)
@@ -1926,6 +1929,10 @@ func configProviderToCore(p config.ProviderConfig) core.ProviderConfig {
 	if p.Codex != nil {
 		c.CodexWireAPI = p.Codex.WireAPI
 		c.CodexHTTPHeaders = p.Codex.HTTPHeaders
+		c.CodexEnvKey = p.Codex.EnvKey
+		c.CodexEnvHTTPHeaders = p.Codex.EnvHTTPHeaders
+		c.CodexProxyURL = p.Codex.ProxyURL
+		c.CodexModelCatalogURL = p.Codex.ModelCatalogURL
 	}
 	return c
 }

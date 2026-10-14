@@ -606,9 +606,12 @@ type ProviderConfig struct {
 // CodexProviderConfig holds Codex CLI-specific provider fields
 // that map to [model_providers.<name>] in Codex's own config.toml.
 type CodexProviderConfig struct {
-	EnvKey      string            `toml:"env_key,omitempty" json:"env_key,omitempty"`
-	WireAPI     string            `toml:"wire_api,omitempty" json:"wire_api,omitempty"`
-	HTTPHeaders map[string]string `toml:"http_headers,omitempty" json:"http_headers,omitempty"`
+	ModelCatalogURL string            `toml:"model_catalog_url,omitempty" json:"model_catalog_url,omitempty"`
+	ProxyURL        string            `toml:"proxy_url,omitempty" json:"proxy_url,omitempty"`
+	EnvKey          string            `toml:"env_key,omitempty" json:"env_key,omitempty"`
+	WireAPI         string            `toml:"wire_api,omitempty" json:"wire_api,omitempty"`
+	HTTPHeaders     map[string]string `toml:"http_headers,omitempty" json:"http_headers,omitempty"`
+	EnvHTTPHeaders  map[string]string `toml:"env_http_headers,omitempty" json:"env_http_headers,omitempty"`
 }
 
 type PlatformConfig struct {

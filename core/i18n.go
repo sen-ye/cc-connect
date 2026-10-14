@@ -270,6 +270,9 @@ const (
 	MsgProviderNotFound          MsgKey = "provider_not_found"
 	MsgProviderSwitched          MsgKey = "provider_switched"
 	MsgProviderCleared           MsgKey = "provider_cleared"
+	MsgSessionProviderSelected   MsgKey = "session_provider_selected"
+	MsgSessionProviderDefault    MsgKey = "session_provider_default"
+	MsgSessionProviderLocked     MsgKey = "session_provider_locked"
 	MsgProviderAdded             MsgKey = "provider_added"
 	MsgProviderAddUsage          MsgKey = "provider_add_usage"
 	MsgProviderAddFailed         MsgKey = "provider_add_failed"
@@ -1617,6 +1620,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ Provider 已清除，新會話將使用預設 Provider。",
 		LangJapanese:           "✅ プロバイダをクリアしました。新しいセッションではデフォルトのプロバイダが使用されます。",
 		LangSpanish:            "✅ Proveedor eliminado. Las nuevas sesiones usarán el proveedor predeterminado.",
+	},
+	MsgSessionProviderSelected: {
+		LangEnglish:            "✅ This conversation is bound to **%s**. It will keep this API configuration when resumed.",
+		LangChinese:            "✅ 本会话已绑定 API 配置 **%s**，后续恢复时继续使用。",
+		LangTraditionalChinese: "✅ 本會話已綁定 API 設定 **%s**，之後恢復時繼續使用。",
+		LangJapanese:           "✅ この会話を **%s** に紐付けました。再開後も同じ API 設定を使用します。",
+		LangSpanish:            "✅ Esta conversación está vinculada a **%s**. Mantendrá esta configuración de API al reanudarse.",
+	},
+	MsgSessionProviderDefault: {
+		LangEnglish:            "📡 This conversation uses the agent CLI's default API configuration.",
+		LangChinese:            "📡 本会话使用 agent 原生默认 API 配置。",
+		LangTraditionalChinese: "📡 本會話使用 agent 原生預設 API 設定。",
+		LangJapanese:           "📡 この会話はエージェント CLI の既定の API 設定を使用します。",
+		LangSpanish:            "📡 Esta conversación usa la configuración de API predeterminada del CLI del agente.",
+	},
+	MsgSessionProviderLocked: {
+		LangEnglish:            "This conversation has already started; its API binding and history are preserved. Use `/new`, then `/provider switch <name>` to choose a different API configuration.",
+		LangChinese:            "本会话已经开始，API 绑定和历史保持不变。请先 `/new`，再用 `/provider switch <名称>` 为新会话选择其他 API 配置。",
+		LangTraditionalChinese: "本會話已經開始，API 綁定和歷史保持不變。請先 `/new`，再用 `/provider switch <名稱>` 為新會話選擇其他 API 設定。",
+		LangJapanese:           "この会話は開始済みのため、API の紐付けと履歴を保持します。`/new` の後に `/provider switch <名前>` で新しい会話の API 設定を選択してください。",
+		LangSpanish:            "Esta conversación ya ha comenzado; se conservan su API y su historial. Use `/new` y luego `/provider switch <nombre>` para elegir otra configuración de API.",
 	},
 	MsgProviderAdded: {
 		LangEnglish:            "✅ Provider **%s** added.\n\nUse `/provider switch %s` to activate.",

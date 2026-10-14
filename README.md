@@ -570,6 +570,8 @@ start if any gate fails or if the probe detects a cross-user leak.
 /provider switch <name>     Switch API provider at runtime
 ```
 
+For Codex, select a provider before the first task to bind that conversation to its API key, endpoint, and optional fixed network proxy. Resume retains the binding. Changing an existing conversation's provider requires `/new` and preserves its history. See the [configuration guide (Chinese)](docs/codex-session-providers.md).
+
 
 ### 🤖 Model Selection
 
