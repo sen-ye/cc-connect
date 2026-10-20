@@ -3433,6 +3433,17 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		channelKey:        msg.ChannelKey,
 		userMessageTimeMs: msg.UserMessageTimeMs,
 	})
+	// A queued message is still the user talking: restart the
+	// reset_on_idle_mins clock now, as the idle path does, or the next
+	// message is measured from the last one that found the session idle
+	// and can be rotated into a new session mid-conversation. Timer, cron
+	// and heartbeat turns never get here (they fail fast on a busy
+	// session), so #1115 still holds. busySession is nil only while the
+	// agent is still starting, right after the message that started it
+	// was counted.
+	if state.busySession != nil {
+		state.busySession.TouchUserActivity()
+	}
 	runMessageAccepted(msg)
 	queueDepth := len(state.pendingMessages)
 
@@ -9712,9 +9723,13 @@ func (e *Engine) cmdHistory(p Platform, msg *Message, args []string) {
 	agentSID := s.GetAgentSessionID()
 	if len(entries) == 0 && agentSID != "" {
 		if hp, ok := agent.(HistoryProvider); ok {
-			if agentEntries, err := hp.GetSessionHistory(e.ctx, agentSID, n); err == nil {
-				entries = agentEntries
+			agentEntries, err := hp.GetSessionHistory(e.ctx, agentSID, n)
+			if err != nil {
+				slog.Warn("history: agent transcript read failed", "session_id", agentSID, "error", err)
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgHistoryReadFailed))
+				return
 			}
+			entries = agentEntries
 		}
 	}
 
@@ -12956,8 +12971,12 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			return
 		}
 		e.cleanupInteractiveState(interactiveKey)
-		session := sessions.SwitchToAgentSession(sessionKey, matched.ID, agent.Name(), matched.Summary)
-		session.ClearHistory()
+		// Same constraint as cmdSwitch: switching to a known agent session
+		// returns the existing Session, whose History still reflects the
+		// original conversation. Clearing it makes /status and /history report
+		// zero messages right after a successful card switch. A fresh Session
+		// already has nil History, so leaving it alone is a no-op there.
+		sessions.SwitchToAgentSession(sessionKey, matched.ID, agent.Name(), matched.Summary)
 
 	case "/dir":
 		fields := strings.Fields(args)
@@ -13929,9 +13948,12 @@ func (e *Engine) renderHistoryCard(sessionKey string) *Card {
 	agentSID := s.GetAgentSessionID()
 	if len(entries) == 0 && agentSID != "" {
 		if hp, ok := agent.(HistoryProvider); ok {
-			if agentEntries, err := hp.GetSessionHistory(e.ctx, agentSID, 10); err == nil {
-				entries = agentEntries
+			agentEntries, err := hp.GetSessionHistory(e.ctx, agentSID, 10)
+			if err != nil {
+				slog.Warn("history: agent transcript read failed", "session_id", agentSID, "error", err)
+				return e.simpleCard(e.i18n.T(MsgCardTitleHistory), "turquoise", e.i18n.T(MsgHistoryReadFailed))
 			}
+			entries = agentEntries
 		}
 	}
 
