@@ -97,6 +97,27 @@ func (a *Agent) GetWorkDir() string {
 	return a.workDir
 }
 
+// WorkspaceAgentOptions keeps custom launchers and their network/authentication
+// environment when the engine creates another workspace agent.
+func (a *Agent) WorkspaceAgentOptions() map[string]any {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	opts := map[string]any{"model": a.model, "mode": a.mode}
+	if a.cmd != "" {
+		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
+	}
+	if len(a.configEnv) > 0 {
+		env := make(map[string]string, len(a.configEnv))
+		for _, entry := range a.configEnv {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				env[key] = value
+			}
+		}
+		opts["env"] = env
+	}
+	return opts
+}
+
 func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -122,11 +143,13 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	}
 	a.mu.RLock()
 	cmd := a.cmd
-	extraEnv := a.providerEnvLocked()
+	extraArgs := append([]string(nil), a.cliExtraArgs...)
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
 
-	if models := fetchModelsFromAgentCLI(ctx, cmd, extraEnv); len(models) > 0 {
+	if models := fetchModelsFromAgentCLI(ctx, cmd, extraEnv, extraArgs...); len(models) > 0 {
 		return models
 	}
 	return cursorFallbackModels()
@@ -134,9 +157,10 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 
 // fetchModelsFromAgentCLI runs `agent models` and parses the output.
 // Output format: "model-id - Display Name  (current)" or "model-id - Display Name"
-func fetchModelsFromAgentCLI(ctx context.Context, cmd string, extraEnv []string) []core.ModelOption {
-	c := exec.CommandContext(ctx, cmd, "models")
-	c.Env = append(os.Environ(), extraEnv...)
+func fetchModelsFromAgentCLI(ctx context.Context, cmd string, extraEnv []string, extraArgs ...string) []core.ModelOption {
+	args := append(append([]string(nil), extraArgs...), "models")
+	c := exec.CommandContext(ctx, cmd, args...)
+	c.Env = core.MergeEnv(os.Environ(), extraEnv)
 	out, err := c.Output()
 	if err != nil {
 		slog.Debug("cursor: agent models failed", "error", err)
