@@ -441,13 +441,14 @@ type HistoryProvider interface {
 
 // ProviderConfig holds API provider settings for an agent.
 type ProviderConfig struct {
-	Name     string
-	APIKey   string
-	BaseURL  string
-	Model    string
-	Models   []ModelOption     // pre-configured list of available models for this provider
-	Thinking string            // override thinking type sent to this provider ("disabled", "enabled", or "" for no rewrite)
-	Env      map[string]string // arbitrary extra env vars (e.g. CLAUDE_CODE_USE_BEDROCK=1)
+	Name         string
+	APIKey       string
+	BaseURL      string
+	Model        string
+	Models       []ModelOption     // pre-configured list of available models for this provider
+	Thinking     string            // override thinking type sent to this provider ("disabled", "enabled", or "" for no rewrite)
+	Env          map[string]string // arbitrary extra env vars (e.g. CLAUDE_CODE_USE_BEDROCK=1)
+	SettingsFile string            // optional per-provider CLI settings overlay (Claude Code)
 	// Codex-specific provider config (maps to Codex model_providers.<name>)
 	CodexWireAPI         string            // wire API format (e.g. "responses")
 	CodexHTTPHeaders     map[string]string // custom HTTP headers

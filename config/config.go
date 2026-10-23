@@ -595,6 +595,7 @@ type ProviderConfig struct {
 	Model           string                           `toml:"model,omitempty"`
 	Models          []ProviderModelConfig            `toml:"models,omitempty"`
 	Thinking        string                           `toml:"thinking,omitempty"`
+	SettingsFile    string                           `toml:"settings_file,omitempty"`
 	Env             map[string]string                `toml:"env,omitempty"`
 	AgentTypes      []string                         `toml:"agent_types,omitempty"`       // optional: restrict to specific agent types (e.g. ["claudecode", "codex"])
 	Endpoints       map[string]string                `toml:"endpoints,omitempty"`         // per-agent-type base URL overrides (e.g. codex = "https://x/v1")
@@ -2939,15 +2940,16 @@ func cloneAgentConfig(in AgentConfig) AgentConfig {
 		out.Providers = make([]ProviderConfig, len(in.Providers))
 		for i := range in.Providers {
 			p := ProviderConfig{
-				Name:        in.Providers[i].Name,
-				APIKey:      in.Providers[i].APIKey,
-				BaseURL:     in.Providers[i].BaseURL,
-				Model:       in.Providers[i].Model,
-				Models:      append([]ProviderModelConfig(nil), in.Providers[i].Models...),
-				Thinking:    in.Providers[i].Thinking,
-				Env:         cloneStringMap(in.Providers[i].Env),
-				Endpoints:   cloneStringMap(in.Providers[i].Endpoints),
-				AgentModels: cloneStringMap(in.Providers[i].AgentModels),
+				Name:         in.Providers[i].Name,
+				APIKey:       in.Providers[i].APIKey,
+				BaseURL:      in.Providers[i].BaseURL,
+				Model:        in.Providers[i].Model,
+				Models:       append([]ProviderModelConfig(nil), in.Providers[i].Models...),
+				Thinking:     in.Providers[i].Thinking,
+				SettingsFile: in.Providers[i].SettingsFile,
+				Env:          cloneStringMap(in.Providers[i].Env),
+				Endpoints:    cloneStringMap(in.Providers[i].Endpoints),
+				AgentModels:  cloneStringMap(in.Providers[i].AgentModels),
 			}
 			if len(in.Providers[i].AgentModelLists) > 0 {
 				p.AgentModelLists = make(map[string][]ProviderModelConfig, len(in.Providers[i].AgentModelLists))

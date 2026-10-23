@@ -23,6 +23,7 @@ export interface GlobalProvider {
   base_url?: string;
   model?: string;
   thinking?: string;
+  settings_file?: string;
   env?: Record<string, string>;
   agent_types?: string[];
   models?: ProviderModel[];

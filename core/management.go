@@ -137,14 +137,15 @@ func (m *ManagementServer) SetSaveGlobalSettings(fn func(map[string]any) error) 
 
 // GlobalProviderInfo is the wire type for global provider CRUD in the management API.
 type GlobalProviderInfo struct {
-	Name       string            `json:"name"`
-	APIKey     string            `json:"api_key,omitempty"`
-	BaseURL    string            `json:"base_url,omitempty"`
-	Model      string            `json:"model,omitempty"`
-	Thinking   string            `json:"thinking,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	AgentTypes []string          `json:"agent_types,omitempty"`
-	Models     []struct {
+	Name         string            `json:"name"`
+	APIKey       string            `json:"api_key,omitempty"`
+	BaseURL      string            `json:"base_url,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Thinking     string            `json:"thinking,omitempty"`
+	SettingsFile string            `json:"settings_file,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	AgentTypes   []string          `json:"agent_types,omitempty"`
+	Models       []struct {
 		Model string `json:"model"`
 		Alias string `json:"alias,omitempty"`
 	} `json:"models,omitempty"`
@@ -1425,10 +1426,11 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 		}
 		for i, p := range providers {
 			provList[i] = map[string]any{
-				"name":     p.Name,
-				"active":   p.Name == activeName,
-				"model":    p.Model,
-				"base_url": p.BaseURL,
+				"name":          p.Name,
+				"active":        p.Name == activeName,
+				"model":         p.Model,
+				"base_url":      p.BaseURL,
+				"settings_file": p.SettingsFile,
 			}
 		}
 		mgmtJSON(w, http.StatusOK, map[string]any{
@@ -1438,12 +1440,13 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 
 	case http.MethodPost:
 		var body struct {
-			Name     string            `json:"name"`
-			APIKey   string            `json:"api_key"`
-			BaseURL  string            `json:"base_url"`
-			Model    string            `json:"model"`
-			Thinking string            `json:"thinking"`
-			Env      map[string]string `json:"env"`
+			Name         string            `json:"name"`
+			APIKey       string            `json:"api_key"`
+			BaseURL      string            `json:"base_url"`
+			Model        string            `json:"model"`
+			Thinking     string            `json:"thinking"`
+			SettingsFile string            `json:"settings_file"`
+			Env          map[string]string `json:"env"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1454,12 +1457,13 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			return
 		}
 		prov := ProviderConfig{
-			Name:     body.Name,
-			APIKey:   body.APIKey,
-			BaseURL:  body.BaseURL,
-			Model:    body.Model,
-			Thinking: body.Thinking,
-			Env:      body.Env,
+			Name:         body.Name,
+			APIKey:       body.APIKey,
+			BaseURL:      body.BaseURL,
+			Model:        body.Model,
+			Thinking:     body.Thinking,
+			SettingsFile: body.SettingsFile,
+			Env:          body.Env,
 		}
 		providers := ps.ListProviders()
 		providers = append(providers, prov)
@@ -2134,10 +2138,11 @@ func (m *ManagementServer) handleCCSwitchProviders(w http.ResponseWriter, r *htt
 // applying per-agent-type overrides for base_url, model, and models.
 func resolveGlobalProviderForAgent(g GlobalProviderInfo, agentType string) ProviderConfig {
 	pc := ProviderConfig{
-		Name:    g.Name,
-		APIKey:  g.APIKey,
-		BaseURL: g.BaseURL,
-		Model:   g.Model,
+		Name:         g.Name,
+		APIKey:       g.APIKey,
+		BaseURL:      g.BaseURL,
+		Model:        g.Model,
+		SettingsFile: g.SettingsFile,
 	}
 	if ep, ok := g.Endpoints[agentType]; ok && ep != "" {
 		pc.BaseURL = ep

@@ -909,6 +909,7 @@ func main() {
 			cp := config.ProviderConfig{
 				Name: p.Name, APIKey: p.APIKey, BaseURL: p.BaseURL,
 				Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
+				SettingsFile: p.SettingsFile,
 			}
 			if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" {
 				cp.Codex = &config.CodexProviderConfig{
@@ -1944,6 +1945,7 @@ func configProviderToCore(p config.ProviderConfig) core.ProviderConfig {
 		Name: p.Name, APIKey: p.APIKey, BaseURL: p.BaseURL,
 		Model: p.Model, Models: convertProviderModels(p.Models),
 		Thinking: p.Thinking, Env: p.Env,
+		SettingsFile: p.SettingsFile,
 	}
 	if p.Codex != nil {
 		c.CodexWireAPI = p.Codex.WireAPI
@@ -2010,15 +2012,16 @@ func startInitialRefreshIfReady(agent core.Agent, result providerWiringResult) {
 
 func configProviderToGlobal(p config.ProviderConfig) core.GlobalProviderInfo {
 	info := core.GlobalProviderInfo{
-		Name:        p.Name,
-		APIKey:      p.APIKey,
-		BaseURL:     p.BaseURL,
-		Model:       p.Model,
-		Thinking:    p.Thinking,
-		Env:         p.Env,
-		AgentTypes:  p.AgentTypes,
-		Endpoints:   p.Endpoints,
-		AgentModels: p.AgentModels,
+		Name:         p.Name,
+		APIKey:       p.APIKey,
+		BaseURL:      p.BaseURL,
+		Model:        p.Model,
+		Thinking:     p.Thinking,
+		SettingsFile: p.SettingsFile,
+		Env:          p.Env,
+		AgentTypes:   p.AgentTypes,
+		Endpoints:    p.Endpoints,
+		AgentModels:  p.AgentModels,
 	}
 	for _, m := range p.Models {
 		info.Models = append(info.Models, struct {
@@ -2047,15 +2050,16 @@ func configProviderToGlobal(p config.ProviderConfig) core.GlobalProviderInfo {
 
 func globalProviderToConfig(info core.GlobalProviderInfo) config.ProviderConfig {
 	p := config.ProviderConfig{
-		Name:        info.Name,
-		APIKey:      info.APIKey,
-		BaseURL:     info.BaseURL,
-		Model:       info.Model,
-		Thinking:    info.Thinking,
-		Env:         info.Env,
-		AgentTypes:  info.AgentTypes,
-		Endpoints:   info.Endpoints,
-		AgentModels: info.AgentModels,
+		Name:         info.Name,
+		APIKey:       info.APIKey,
+		BaseURL:      info.BaseURL,
+		Model:        info.Model,
+		Thinking:     info.Thinking,
+		SettingsFile: info.SettingsFile,
+		Env:          info.Env,
+		AgentTypes:   info.AgentTypes,
+		Endpoints:    info.Endpoints,
+		AgentModels:  info.AgentModels,
 	}
 	for _, m := range info.Models {
 		p.Models = append(p.Models, config.ProviderModelConfig{Model: m.Model, Alias: m.Alias})

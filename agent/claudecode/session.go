@@ -42,6 +42,7 @@ type claudeSession struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
+	providerProxy   *core.ProviderProxy // owned by this session, never the agent default
 	turnMu          sync.Mutex
 	turns           claudeTurnTracker
 
@@ -259,8 +260,17 @@ func buildAppendSystemPrompt(agentPrompt, platformPrompt, userAppend string) str
 	return strings.Join(parts, "\n")
 }
 
-func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ctxWindowTokens int, ccDataDir string, lang core.Language) (*claudeSession, error) {
+type claudeSessionOptions struct {
+	settingsFile  string
+	providerProxy *core.ProviderProxy
+}
+
+func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ctxWindowTokens int, ccDataDir string, lang core.Language, options ...claudeSessionOptions) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
+	var opts claudeSessionOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 
 	// Claude Code rejects bypassPermissions when running as root.
 	// Downgrade to "auto" which auto-approves internally in cc-connect.
@@ -286,6 +296,9 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--permission-prompt-tool", "stdio",
+	}
+	if opts.settingsFile != "" {
+		innerArgs = append(innerArgs, "--settings", opts.settingsFile)
 	}
 	if !disableVerbose {
 		innerArgs = append(innerArgs, "--verbose")
@@ -534,6 +547,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		startupWarning:      rootDowngradeWarning,
 		promptFilePath:      cleanupPromptPath,
 		ctxWindowOverride:   ctxWindowTokens,
+		providerProxy:       opts.providerProxy,
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
@@ -545,6 +559,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 }
 
 func (cs *claudeSession) readLoop(stdout io.ReadCloser, stderrBuf *bytes.Buffer) {
+	defer cs.closeProviderProxy()
 	waitErrCh, waitDone := cs.startReadLoopWait(stdout)
 	defer cs.finishReadLoop(waitErrCh, stderrBuf)
 
@@ -1700,6 +1715,7 @@ func (cs *claudeSession) Alive() bool {
 const defaultGracefulStopTimeout = 5 * time.Second
 
 func (cs *claudeSession) Close() error {
+	defer cs.closeProviderProxy()
 	// Best-effort cleanup of the --append-system-prompt-file temp file on
 	// every exit path. The file is small (~9KB) and OS temp cleanup also
 	// eventually claims it, but explicit removal keeps workdirs tidy.
@@ -1787,6 +1803,12 @@ func (cs *claudeSession) Close() error {
 			return fmt.Errorf("process tree (pid %d) still alive after SIGKILL retries: %w", pid, killErr)
 		}
 		return fmt.Errorf("process tree (pid %d) still alive 10s after SIGKILL reported success", pid)
+	}
+}
+
+func (cs *claudeSession) closeProviderProxy() {
+	if cs.providerProxy != nil {
+		cs.providerProxy.Close()
 	}
 }
 

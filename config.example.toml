@@ -944,8 +944,9 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 #   - Set NO_PROXY=127.0.0.1 to prevent proxy interference
 #   - Disable telemetry and cost warnings for cleaner integration
 #
-# Note: When using router, provider settings below are ignored as the router handles model selection.
-# 注意：使用 router 时，下方的 provider 设置将被忽略，因为 router 负责模型选择。
+# The router is used for the native/default route. A provider with its own
+# base_url, settings_file or routing env uses that provider's route instead.
+# router 用于原生/默认配置；有独立地址、settings_file 或路由环境的 provider 使用自己的路由。
 
 # Active provider (matches a name in [[projects.agent.providers]] or provider_refs)
 # 当前激活的 provider（对应下方 providers 或 provider_refs 中的 name）
@@ -958,6 +959,15 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # API Providers — switch between them via /provider command in chat
 # or via CLI: cc-connect provider add --project my-backend --name relay --api-key sk-xxx
 # API Provider 管理 — 可通过聊天命令 /provider 或 CLI 命令切换
+# Select before the first task: /new → /provider switch <name>. Each conversation
+# keeps its provider across resume/restart; other conversations are unaffected.
+# 第一条任务前选择：/new → /provider switch <名称>。恢复/重启保持绑定，不影响其他会话。
+#
+# Claude Code can reuse a settings JSON/JSONC overlay, including apiKeyHelper.
+# Claude Code 可直接复用已有 settings 文件及 apiKeyHelper，无需复制凭据。
+# [[projects.agent.providers]]
+# name = "settings-profile"
+# settings_file = "~/.claude/settings.provider.json"
 #
 # [[projects.agent.providers]]
 # name = "anthropic"

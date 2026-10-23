@@ -541,7 +541,32 @@ func validateSessionIDInProject(configHome, workDir, sessionID string) bool {
 
 // StartSession creates a persistent interactive Claude Code session.
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, "", true)
+}
+
+// StartSessionWithProvider uses a conversation's saved binding without changing
+// the agent default or any other session's environment and proxy.
+func (a *Agent) StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, providerName, false)
+}
+
+func (a *Agent) startSession(ctx context.Context, sessionID, providerName string, useDefault bool) (core.AgentSession, error) {
 	a.mu.Lock()
+	activeIdx := -1
+	if useDefault {
+		activeIdx = a.activeIdx
+	} else if providerName != "" {
+		for i, p := range a.providers {
+			if p.Name == providerName {
+				activeIdx = i
+				break
+			}
+		}
+		if activeIdx < 0 {
+			a.mu.Unlock()
+			return nil, fmt.Errorf("claudecode: provider %q unavailable", providerName)
+		}
+	}
 	tools := make([]string, len(a.allowedTools))
 	copy(tools, a.allowedTools)
 	disTools := make([]string, len(a.disallowedTools))
@@ -554,14 +579,31 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	mode := a.mode
 	pluginDirs := make([]string, len(a.pluginDirs))
 	copy(pluginDirs, a.pluginDirs)
-	extraEnv := a.runtimeEnvLocked()
+	// Reuse the existing environment builder on a spawn-local instance. In
+	// particular its thinking-rewrite proxy must never be shared by sessions.
+	runtime := &Agent{
+		activeIdx:    -1,
+		configEnv:    append([]string(nil), a.configEnv...),
+		sessionEnv:   append([]string(nil), a.sessionEnv...),
+		routerURL:    a.routerURL,
+		routerAPIKey: a.routerAPIKey,
+	}
 
-	activeIdx := a.activeIdx
+	var settingsFile string
 	var activeProviderName string
 	if activeIdx >= 0 && activeIdx < len(a.providers) {
-		activeProviderName = a.providers[activeIdx].Name
-		if m := a.providers[activeIdx].Model; m != "" {
+		provider := a.providers[activeIdx]
+		activeProviderName = provider.Name
+		settingsFile = provider.SettingsFile
+		runtime.providers = []core.ProviderConfig{provider}
+		runtime.activeIdx = 0
+		if m := provider.Model; m != "" {
 			model = m
+		}
+		// An explicit account must not be redirected through the project's
+		// default router. Empty bindings still retain the native/default route.
+		if provider.BaseURL != "" || provider.SettingsFile != "" || claudeEnvManagesProviderRouting(providerEnvEntries(provider.Env)) {
+			runtime.routerURL, runtime.routerAPIKey = "", ""
 		}
 	}
 	slog.Debug("claudecode: StartSession provider state",
@@ -579,10 +621,27 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	lang := a.lang
 	// When router_url is set, --verbose conflicts with --output-format stream-json
 	// (verbose emits non-JSON text to stdout that corrupts the JSON stream).
-	disableVerbose := a.routerURL != ""
+	disableVerbose := runtime.routerURL != ""
 	a.mu.Unlock()
 
-	return newClaudeSession(ctx, workDir, a.cmd, a.cliExtraArgs, a.cmdArgsFlag, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt, tools, disTools, pluginDirs, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok, ctxWin, a.ccDataDir, lang)
+	if settingsFile != "" {
+		path, settingsModel, err := resolveProviderSettings(settingsFile, workDir)
+		if err != nil {
+			return nil, err
+		}
+		settingsFile = path
+		if runtime.providers[0].Model == "" && settingsModel != "" {
+			model = settingsModel
+		}
+	}
+	extraEnv := runtime.runtimeEnvLocked()
+	session, err := newClaudeSession(ctx, workDir, a.cmd, a.cliExtraArgs, a.cmdArgsFlag, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt, tools, disTools, pluginDirs, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok, ctxWin, a.ccDataDir, lang,
+		claudeSessionOptions{settingsFile: settingsFile, providerProxy: runtime.providerProxy})
+	if err != nil {
+		runtime.stopProviderProxyLocked()
+		return nil, err
+	}
+	return session, nil
 }
 
 func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
