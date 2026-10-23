@@ -1348,6 +1348,9 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 
 	case "agentMessage":
+		if s.handleAsyncUserInput(item) {
+			return
+		}
 		text := appServerAgentMessageText(item)
 		if text != "" {
 			s.emit(core.Event{Type: core.EventText, Content: text})

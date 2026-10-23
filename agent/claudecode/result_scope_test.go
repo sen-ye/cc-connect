@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,17 +43,92 @@ func sendScopedTestMessage(t *testing.T, s *claudeSession, input *bytes.Buffer, 
 	return id
 }
 
+func scopedTestEvent(t *testing.T, s *claudeSession) core.Event {
+	t.Helper()
+	select {
+	case event := <-s.events:
+		return event
+	default:
+		t.Fatal("expected a synchronously emitted event")
+		return core.Event{}
+	}
+}
+
 func TestResultScope_ResumeNotificationDoesNotCompleteUserTurn(t *testing.T) {
 	s, input := scopedTestSession()
 	id := sendScopedTestMessage(t, s, input, "platform-message")
 	s.handleReadLoopLine(`{"type":"command_lifecycle","command_uuid":"` + id + `","state":"queued"}`)
 	s.handleResult(map[string]any{"type": "result", "subtype": "success", "num_turns": float64(0), "result": "", "origin": map[string]any{"kind": "task-notification"}})
-	if e := <-s.events; !e.Background {
-		t.Fatalf("resume notification completed foreground: %+v", e)
+	if len(s.events) != 0 {
+		t.Fatalf("empty resume notification emitted an event: %+v", scopedTestEvent(t, s))
 	}
 	s.handleResult(map[string]any{"type": "result", "subtype": "success", "result": "done", "user_message_uuid": id})
-	if e := <-s.events; !e.Done || e.Background || e.Content != "done" {
+	if e := scopedTestEvent(t, s); !e.Done || e.Background || e.Content != "done" {
 		t.Fatalf("real result = %+v", e)
+	}
+}
+
+func TestResultScope_EmptyTaskNotificationDoesNotMutateCorrelation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		correlated bool
+		binding    string
+	}{
+		{name: "unbound"},
+		{name: "foreign UUID on legacy stream", binding: "foreign"},
+		{name: "foreground UUID", correlated: true, binding: "foreground"},
+		{name: "batched foreground and supplement UUIDs", correlated: true, binding: "batch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, input := scopedTestSession()
+			id := sendScopedTestMessage(t, s, input, "user")
+			ids := []any{id}
+			if tc.binding == "batch" {
+				ids = append(ids, sendScopedTestMessage(t, s, input, ""))
+			}
+			if tc.correlated {
+				s.handleCommandLifecycle(map[string]any{"command_uuid": id, "state": "queued"})
+			}
+			before := s.turns
+			before.pending = maps.Clone(before.pending)
+			before.finished = maps.Clone(before.finished)
+			before.results = maps.Clone(before.results)
+			before.finishedOrder = slices.Clone(before.finishedOrder)
+			before.resultOrder = slices.Clone(before.resultOrder)
+
+			notification := map[string]any{
+				"type": "result", "subtype": "success", "uuid": "notification-result",
+				"result": "", "num_turns": float64(0),
+				"origin": map[string]any{"kind": "task-notification"},
+			}
+			switch tc.binding {
+			case "foreign":
+				notification["user_message_uuid"] = "foreign-input"
+			case "foreground":
+				notification["user_message_uuid"] = id
+			case "batch":
+				notification["user_message_uuid"] = ids[len(ids)-1]
+				notification["user_message_uuids"] = ids
+			}
+			s.handleResult(notification)
+			if len(s.events) != 0 {
+				t.Fatalf("empty notification emitted an event: %+v", scopedTestEvent(t, s))
+			}
+			if !reflect.DeepEqual(s.turns, before) {
+				t.Fatalf("ignored notification changed correlation state:\nbefore: %+v\nafter: %+v", before, s.turns)
+			}
+
+			// A real result may also be empty and use zero model turns, as with
+			// a local command. Its UUIDs must still complete the foreground.
+			s.handleResult(map[string]any{
+				"type": "result", "subtype": "success", "uuid": "foreground-result",
+				"result": "", "num_turns": float64(0),
+				"user_message_uuid": ids[len(ids)-1], "user_message_uuids": ids,
+			})
+			if e := scopedTestEvent(t, s); e.Type != core.EventResult || !e.Done || e.Background || e.Content != "" {
+				t.Fatalf("legitimate empty foreground result = %+v", e)
+			}
+		})
 	}
 }
 
@@ -160,11 +238,10 @@ func TestResultScope_RecordedResumeSequence(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		s.handleReadLoopLine(strings.ReplaceAll(line, "CLIENT_UUID", id))
 	}
-	first, second := <-s.events, <-s.events
-	if !first.Background || !first.Done {
-		t.Fatalf("notification = %+v", first)
+	if len(s.events) != 1 {
+		t.Fatalf("got %d events, want only the foreground result", len(s.events))
 	}
-	if second.Background || !second.Done || second.Content != "Context ready" {
-		t.Fatalf("user result = %+v", second)
+	if event := scopedTestEvent(t, s); event.Background || !event.Done || event.Content != "Context ready" {
+		t.Fatalf("user result = %+v", event)
 	}
 }
