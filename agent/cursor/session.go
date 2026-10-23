@@ -1,8 +1,6 @@
 package cursor
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +32,9 @@ type cursorSession struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	alive     atomic.Bool
+	launchMu  sync.Mutex // serializes Send with Close and protects running
+	running   bool
+	closeOnce sync.Once
 
 	thinkingBuf strings.Builder // accumulate thinking deltas
 
@@ -76,6 +77,14 @@ func newCursorSession(ctx context.Context, cmd string, extraArgs []string, workD
 }
 
 func (cs *cursorSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	cs.launchMu.Lock()
+	defer cs.launchMu.Unlock()
+	if !cs.alive.Load() {
+		return fmt.Errorf("cursor: session is closed")
+	}
+	if cs.running {
+		return fmt.Errorf("cursor: previous turn is still running")
+	}
 	if len(images) > 0 {
 		// The Cursor Agent CLI has no image flag, but it can open image files
 		// from disk and see their content. So route images through the same
@@ -152,9 +161,11 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 		return fmt.Errorf("cursorSession: stdin pipe: %w", err)
 	}
 
-	var stderrBuf bytes.Buffer
+	var stderrBuf cursorTailBuffer
 	cmd.Stderr = &stderrBuf
 
+	started := time.Now()
+	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		return fmt.Errorf("cursorSession: start: %w", err)
@@ -164,67 +175,12 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 	cs.stdin = stdin
 	cs.stdinMu.Unlock()
 
+	cs.running = true
+	cs.thinkingBuf.Reset()
 	cs.wg.Add(1)
-	go cs.readLoop(cmd, stdout, &stderrBuf)
+	go cs.readLoop(cmd, stdout, stdin, &stderrBuf, started)
 
 	return nil
-}
-
-func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer) {
-	defer cs.wg.Done()
-	defer func() {
-		// Close stdin so Cursor knows the input stream is finished.
-		cs.stdinMu.Lock()
-		if cs.stdin != nil {
-			_ = cs.stdin.Close()
-			cs.stdin = nil
-		}
-		cs.stdinMu.Unlock()
-	}()
-	defer func() {
-		if err := cmd.Wait(); err != nil {
-			stderrMsg := strings.TrimSpace(stderrBuf.String())
-			if stderrMsg != "" {
-				slog.Error("cursorSession: process failed", "error", err, "stderr", stderrMsg)
-				evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
-				select {
-				case cs.events <- evt:
-				case <-cs.ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		slog.Debug("cursorSession: raw", "line", truncateStr(line, 500))
-
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			slog.Debug("cursorSession: non-JSON line", "line", line)
-			continue
-		}
-
-		cs.handleEvent(raw)
-	}
-
-	if err := scanner.Err(); err != nil {
-		slog.Error("cursorSession: scanner error", "error", err)
-		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("read stdout: %w", err)}
-		select {
-		case cs.events <- evt:
-		case <-cs.ctx.Done():
-			return
-		}
-	}
 }
 
 func (cs *cursorSession) handleEvent(raw map[string]any) {
@@ -248,6 +204,9 @@ func (cs *cursorSession) handleEvent(raw map[string]any) {
 
 	case "interaction_query":
 		cs.handleInteractionQuery(raw)
+
+	case "error":
+		cs.emit(cs.errorEvent(raw))
 
 	case "result":
 		cs.handleResult(raw)
@@ -561,6 +520,13 @@ func extractToolInput(toolName string, call map[string]any) string {
 }
 
 func (cs *cursorSession) handleResult(raw map[string]any) {
+	cs.emit(cs.resultEvent(raw))
+}
+
+func (cs *cursorSession) resultEvent(raw map[string]any) core.Event {
+	if failedCursorResult(raw) {
+		return cs.errorEvent(raw)
+	}
 	var content string
 	if result, ok := raw["result"].(string); ok {
 		content = result
@@ -587,11 +553,7 @@ func (cs *cursorSession) handleResult(raw map[string]any) {
 		CacheReadInputTokens:     cacheReadTokens,
 		CacheCreationInputTokens: cacheWriteTokens,
 	}
-	select {
-	case cs.events <- evt:
-	case <-cs.ctx.Done():
-		return
-	}
+	return evt
 }
 
 // parseCursorUsage extracts token counts from a Cursor result event's `usage`
@@ -653,19 +615,19 @@ func (cs *cursorSession) Alive() bool {
 }
 
 func (cs *cursorSession) Close() error {
-	cs.alive.Store(false)
-	cs.cancel()
-	done := make(chan struct{})
-	go func() {
-		cs.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		close(cs.events)
-	case <-time.After(8 * time.Second):
-		slog.Warn("cursorSession: close timed out, abandoning wg.Wait")
-	}
+	cs.closeOnce.Do(func() {
+		cs.launchMu.Lock()
+		cs.alive.Store(false)
+		cs.cancel()
+		cs.launchMu.Unlock()
+		done := make(chan struct{})
+		go func() { cs.wg.Wait(); close(cs.events); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+			slog.Warn("cursorSession: close timed out; channels close after readers exit")
+		}
+	})
 	return nil
 }
 

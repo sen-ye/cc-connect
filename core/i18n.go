@@ -218,6 +218,18 @@ const (
 	MsgToolAuthNotSupported      MsgKey = "tool_auth_not_supported"
 	MsgToolAllowFailed           MsgKey = "tool_allow_failed"
 	MsgToolAllowedNew            MsgKey = "tool_allowed_new"
+	MsgAgentRetrying             MsgKey = "agent_retrying"
+	MsgAgentFailureProvider      MsgKey = "agent_failure_provider"
+	MsgAgentFailureConnection    MsgKey = "agent_failure_connection"
+	MsgAgentFailureStalled       MsgKey = "agent_failure_stalled"
+	MsgAgentFailureNoProgress    MsgKey = "agent_failure_no_progress"
+	MsgAgentFailureRateLimit     MsgKey = "agent_failure_rate_limit"
+	MsgAgentFailureAuth          MsgKey = "agent_failure_auth"
+	MsgAgentFailureCancelled     MsgKey = "agent_failure_cancelled"
+	MsgAgentFailureProcess       MsgKey = "agent_failure_process"
+	MsgAgentFailureContext       MsgKey = "agent_failure_context"
+	MsgAgentFailureRetryAfter    MsgKey = "agent_failure_retry_after"
+	MsgAgentFailureDetail        MsgKey = "agent_failure_detail"
 	MsgError                     MsgKey = "error"
 	MsgSessionNotFound           MsgKey = "session_not_found"
 	MsgFailedToStartAgentSession MsgKey = "failed_to_start_agent_session"
@@ -885,6 +897,90 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 工具 `%s` 已預授權。將在下次會話生效。",
 		LangJapanese:           "✅ ツール `%s` を事前許可しました。次のセッションから有効になります。",
 		LangSpanish:            "✅ Herramienta `%s` pre-autorizada. Se aplicará en la próxima sesión.",
+	},
+	MsgAgentRetrying: {
+		LangEnglish:            "⏳ %s is recovering the connection (attempt %d). This turn is still running.",
+		LangChinese:            "⏳ %s 正在自动恢复连接（第 %d 次），本轮仍在执行。",
+		LangTraditionalChinese: "⏳ %s 正在自動恢復連線（第 %d 次），本輪仍在執行。",
+		LangJapanese:           "⏳ %s が接続を自動復旧しています（%d 回目）。このターンは続行中です。",
+		LangSpanish:            "⏳ %s está recuperando la conexión (intento %d). El turno sigue en curso.",
+	},
+	MsgAgentFailureProvider: {
+		LangEnglish:            "❌ %s: the model provider rejected this request. Automatic recovery has stopped. Try later or switch models; inspect the request if this persists.",
+		LangChinese:            "❌ %s：模型服务请求失败，自动恢复已停止。可稍后重试或切换模型；若持续失败，请检查请求详情。",
+		LangTraditionalChinese: "❌ %s：模型服務請求失敗，自動恢復已停止。可稍後重試或切換模型；若持續失敗，請檢查請求詳情。",
+		LangJapanese:           "❌ %s：モデル提供元へのリクエストが失敗し、自動復旧を停止しました。時間をおいて再試行するかモデルを変更し、続く場合はリクエストを確認してください。",
+		LangSpanish:            "❌ %s: falló la solicitud al proveedor y se detuvo la recuperación automática. Reintenta más tarde o cambia de modelo; revisa la solicitud si persiste.",
+	},
+	MsgAgentFailureConnection: {
+		LangEnglish:            "❌ %s could not connect to the service. Check the network and proxy before retrying in this conversation.",
+		LangChinese:            "❌ %s 无法连接服务，请检查网络和代理后在当前会话重试。",
+		LangTraditionalChinese: "❌ %s 無法連接服務，請檢查網路和代理後在目前會話重試。",
+		LangJapanese:           "❌ %s はサービスに接続できませんでした。ネットワークとプロキシを確認してから、この会話で再試行してください。",
+		LangSpanish:            "❌ %s no pudo conectarse al servicio. Comprueba la red y el proxy antes de reintentar en esta conversación.",
+	},
+	MsgAgentFailureStalled: {
+		LangEnglish:            "❌ %s: the connection stopped making progress and automatic recovery ended. Send “continue” in this conversation to retry.",
+		LangChinese:            "❌ %s：连接持续无进展，自动恢复已结束。可在当前会话发送“继续”重试。",
+		LangTraditionalChinese: "❌ %s：連線持續無進展，自動恢復已結束。可在目前會話傳送「繼續」重試。",
+		LangJapanese:           "❌ %s：接続が進行せず、自動復旧を終了しました。この会話で「続けて」と送信すると再試行できます。",
+		LangSpanish:            "❌ %s: la conexión dejó de avanzar y terminó la recuperación automática. Envía «continúa» en esta conversación para reintentar.",
+	},
+	MsgAgentFailureNoProgress: {
+		LangEnglish:            "⚠️ %s stopped this turn: recovery attempts saved no new progress. Send “continue” in this conversation to retry from the last saved state.",
+		LangChinese:            "⚠️ %s 本轮已停止：连续恢复仍未保存新的进度。可在当前会话发送“继续”，从最后保存状态尝试恢复。",
+		LangTraditionalChinese: "⚠️ %s 本輪已停止：連續恢復仍未儲存新的進度。可在目前會話傳送「繼續」，從最後儲存狀態嘗試恢復。",
+		LangJapanese:           "⚠️ %s がこのターンを停止しました。復旧を試みても新しい進捗が保存されませんでした。この会話で「続けて」と送信し、最後の保存状態から再試行できます。",
+		LangSpanish:            "⚠️ %s detuvo este turno: los intentos de recuperación no guardaron progreso nuevo. Envía «continúa» en esta conversación para reintentar desde el último estado guardado.",
+	},
+	MsgAgentFailureRateLimit: {
+		LangEnglish:            "⚠️ %s: the service reported a rate limit. Wait before retrying in this conversation.",
+		LangChinese:            "⚠️ %s：服务返回限流错误，请等待后在当前会话重试。",
+		LangTraditionalChinese: "⚠️ %s：服務回傳限流錯誤，請等待後在目前會話重試。",
+		LangJapanese:           "⚠️ %s：サービスのレート制限に達しました。しばらく待ってからこの会話で再試行してください。",
+		LangSpanish:            "⚠️ %s: el servicio indicó un límite de solicitudes. Espera antes de reintentar en esta conversación.",
+	},
+	MsgAgentFailureAuth: {
+		LangEnglish:            "❌ %s: authentication or access was rejected. Check the CLI login and the selected credentials before retrying.",
+		LangChinese:            "❌ %s：身份验证或访问被拒绝，请检查 CLI 登录状态及所选凭据后重试。",
+		LangTraditionalChinese: "❌ %s：身分驗證或存取遭拒，請檢查 CLI 登入狀態及所選憑證後重試。",
+		LangJapanese:           "❌ %s：認証またはアクセスが拒否されました。CLI のログイン状態と選択した認証情報を確認してください。",
+		LangSpanish:            "❌ %s: se rechazó la autenticación o el acceso. Comprueba el inicio de sesión de la CLI y las credenciales antes de reintentar.",
+	},
+	MsgAgentFailureCancelled: {
+		LangEnglish:            "⏹ %s: this turn was cancelled.",
+		LangChinese:            "⏹ %s：本轮已停止。",
+		LangTraditionalChinese: "⏹ %s：本輪已停止。",
+		LangJapanese:           "⏹ %s：このターンはキャンセルされました。",
+		LangSpanish:            "⏹ %s: se canceló este turno.",
+	},
+	MsgAgentFailureProcess: {
+		LangEnglish:            "❌ %s exited without successfully completing this turn. You can retry in the same conversation.",
+		LangChinese:            "❌ %s 未正常完成本轮便已退出，可在当前会话重试。",
+		LangTraditionalChinese: "❌ %s 未正常完成本輪便已退出，可在目前會話重試。",
+		LangJapanese:           "❌ %s はこのターンを正常に完了せず終了しました。同じ会話で再試行できます。",
+		LangSpanish:            "❌ %s terminó sin completar correctamente este turno. Puedes reintentar en la misma conversación.",
+	},
+	MsgAgentFailureContext: {
+		LangEnglish:            "Model: %s · Session: %s\nRetries: %s · HTTP: %s · Request: %s",
+		LangChinese:            "模型：%s · 会话：%s\n重试次数：%s · HTTP：%s · 请求：%s",
+		LangTraditionalChinese: "模型：%s · 會話：%s\n重試次數：%s · HTTP：%s · 請求：%s",
+		LangJapanese:           "モデル：%s · セッション：%s\n再試行：%s 回 · HTTP：%s · リクエスト：%s",
+		LangSpanish:            "Modelo: %s · Sesión: %s\nReintentos: %s · HTTP: %s · Solicitud: %s",
+	},
+	MsgAgentFailureRetryAfter: {
+		LangEnglish:            "Suggested wait (Retry-After): %s",
+		LangChinese:            "建议等待（Retry-After）：%s",
+		LangTraditionalChinese: "建議等待（Retry-After）：%s",
+		LangJapanese:           "推奨待機時間（Retry-After）：%s",
+		LangSpanish:            "Espera sugerida (Retry-After): %s",
+	},
+	MsgAgentFailureDetail: {
+		LangEnglish:            "Details: %s",
+		LangChinese:            "详情：%s",
+		LangTraditionalChinese: "詳情：%s",
+		LangJapanese:           "詳細：%s",
+		LangSpanish:            "Detalles: %s",
 	},
 	MsgError: {
 		LangEnglish:            "❌ Error: %v",

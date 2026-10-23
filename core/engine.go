@@ -5335,7 +5335,7 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			case EventError:
 				if event.Error != nil {
 					slog.Error("unsolicited agent error", "error", event.Error, "session", sessionKey)
-					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), event.Error))
+					e.send(p, replyCtx, e.agentErrorMessage(event.Error, event.SessionID))
 				}
 				state.mu.Lock()
 				state.eventsNeedResync = true
@@ -5644,6 +5644,36 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		switch event.Type {
 		case EventModelSwitch:
 			e.relayModelSwitch(p, replyCtx, sessionKey, event.ModelSwitch)
+
+		case EventRetry:
+			if event.Retry == nil {
+				break
+			}
+			notice := e.i18n.Tf(MsgAgentRetrying, e.agentDisplayName(), event.Retry.Attempt)
+			if streamCard != nil && !streamCard.Failed() {
+				if err := streamCard.Update(e.ctx, buildCardContent(notice, cardToolCalls, cardAnswerText.String())); err == nil {
+					break
+				}
+			}
+			if hasRichCard {
+				steps := append(append([]ToolStep(nil), toolSteps...), ToolStep{Kind: ToolStepKindThinking, Summary: notice})
+				card := buildResolvedRichCard(CardStatusWorking, "", steps, partialText, true, e.composeRichStatusFooter(true, turnStart, replyAgent, state.agentSession, workspaceDir))
+				if cardMessageID == nil {
+					if starter, ok := p.(PreviewStarter); ok {
+						if handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card); err == nil {
+							cardMessageID = handle
+							break
+						}
+					}
+				} else if updater, ok := p.(MessageUpdater); ok {
+					if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err == nil {
+						break
+					}
+				}
+			}
+			if !cp.Append(notice) {
+				e.send(p, replyCtx, notice)
+			}
 
 		case EventHookRejected:
 			// Claude Code emits this between a Stop-hook-rejected draft and its
@@ -6788,7 +6818,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 			if event.Error != nil {
-				errMsg := event.Error.Error()
 				slog.Error("agent error", "error", event.Error)
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventError,
@@ -6796,14 +6825,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					Platform:   p.Name(),
 					Error:      event.Error.Error(),
 				})
-				userMsg := fmt.Sprintf(e.i18n.T(MsgError), errMsg)
-				for _, h := range agentErrorHandlers {
-					if strings.Contains(errMsg, h.contains) {
-						userMsg = e.i18n.T(h.msgKey)
-						break
+				userMsg := e.agentErrorMessage(event.Error, session.GetAgentSessionID())
+				onCard := false
+				if streamCard != nil && !streamCard.Failed() {
+					if err := streamCard.Finalize(e.ctx, userMsg); err == nil {
+						onCard = true
+					} else {
+						slog.Warn("streaming card: finalize error failed", "error", err)
 					}
 				}
-				e.send(p, replyCtx, userMsg)
+				if !onCard {
+					e.send(p, replyCtx, userMsg)
+				}
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -11257,7 +11290,7 @@ func (e *Engine) processCompressEvents(state *interactiveState, session *Session
 		case EventError:
 			logCompletion("error")
 			if !auto && event.Error != nil {
-				e.reply(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), event.Error))
+				e.reply(p, replyCtx, e.agentErrorMessage(event.Error, event.SessionID))
 			}
 			// Only drop queued messages if the agent is dead; some agents
 			// emit per-turn EventError while staying alive.

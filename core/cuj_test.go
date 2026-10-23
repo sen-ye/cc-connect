@@ -763,6 +763,46 @@ type startSessionError struct{ msg string }
 func (e *startSessionError) Error() string { return e.msg }
 
 func TestCUJ_G1_LLMFailureSurfacesErrorToUser(t *testing.T) {
+	t.Run("RecoveryNoticeFailureThenContinue", func(t *testing.T) {
+		env := newCUJEnv(t)
+		t.Cleanup(func() { _ = env.engine.Stop() })
+		env.agent.setNextSessionEvents([]Event{
+			{Type: EventRetry, Retry: &AgentRetry{Attempt: 1}},
+			{Type: EventRetry, Retry: &AgentRetry{Attempt: 2}},
+			{Type: EventError, SessionID: "cuj-agent-session", Error: &AgentFailure{Kind: FailureNoProgress, Model: "test-model", RetryCount: 2, RequestID: "request-final"}},
+		}, 0)
+		key := env.userSends("retry-user", "perform task")
+		env.waitFor("terminal failure", 3*time.Second, func() bool {
+			return env.sentContains("recovery attempts saved no new progress") && !env.activeSession(key).Busy()
+		})
+		if !env.sentContains("attempt 1") || !env.sentContains("attempt 2") || !env.sentContains("Session: cuj-agent-session") {
+			t.Fatalf("missing retry or recovery context: %v", env.plat.getSent())
+		}
+		// A status request after failure remains responsive and does not start work.
+		env.userSends("retry-user", "/status")
+		env.agent.mu.Lock()
+		current := env.agent.sessions[0]
+		env.agent.mu.Unlock()
+		if len(current.getSentPrompts()) != 1 {
+			t.Fatal("failure or status automatically replayed the task")
+		}
+		current.mu.Lock()
+		current.reply = "continued from saved conversation"
+		current.mu.Unlock()
+		env.userSends("retry-user", "continue")
+		env.waitFor("resumed reply", 3*time.Second, func() bool {
+			return env.sentContains("continued from saved conversation") && !env.activeSession(key).Busy()
+		})
+		failures := 0
+		for _, text := range env.plat.getSent() {
+			if strings.Contains(text, "recovery attempts saved no new progress") {
+				failures++
+			}
+		}
+		if failures != 1 {
+			t.Fatalf("failure shown %d times", failures)
+		}
+	})
 	plat := &stubPlatformEngine{n: "test"}
 	agent := &failingAgent{}
 	agent.failNext.Set(true)

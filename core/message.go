@@ -455,6 +455,7 @@ const (
 	EventToolResult        EventType = "tool_result"        // tool execution result
 	EventResult            EventType = "result"             // final aggregated result
 	EventError             EventType = "error"              // error occurred
+	EventRetry             EventType = "retry"              // CLI is automatically recovering; turn remains active
 	EventPermissionRequest EventType = "permission_request" // agent requests permission via stdio protocol
 	EventUserInputRequest  EventType = "user_input_request" // non-blocking question; answer is a user message
 	EventThinking          EventType = "thinking"           // thinking/processing status
@@ -509,6 +510,7 @@ type Event struct {
 	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
 	Done                     bool
 	Error                    error
+	Retry                    *AgentRetry
 	InputTokens              int // token usage from agent result events
 	OutputTokens             int
 	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)
