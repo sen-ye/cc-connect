@@ -1,0 +1,72 @@
+[
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*",
+          "targetDirectory": "/opt/tiger/yesen"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*",
+          "targetDirectory": "/mnt/bn/ic-vlm-hl/personal/senye.eason/code"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*",
+          "targetDirectory": "/mnt/hdfs/user_wl/senye.eason/code"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*unify_sim*",
+          "targetDirectory": "/opt/tiger/yesen"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*robo*",
+          "targetDirectory": "/opt/tiger/yesen"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*unify_sim*",
+          "targetDirectory": "/mnt/bn/ic-vlm-hl/personal/senye.eason/code"
+        }
+      }
+    }
+  },
+  {
+    "tool_call": {
+      "globToolCall": {
+        "args": {
+          "globPattern": "*unify_sim*",
+          "targetDirectory": "/mnt/hdfs/user_wl/senye.eason/code"
+        }
+      }
+    }
+  }
+]

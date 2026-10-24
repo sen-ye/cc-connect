@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -490,24 +491,32 @@ func extractToolInput(toolName string, call map[string]any) string {
 		if cmd, ok := args["command"].(string); ok {
 			return cmd
 		}
-	case "Read":
-		if p, ok := args["path"].(string); ok {
-			return p
-		}
-	case "Edit", "Write":
-		if p, ok := args["path"].(string); ok {
-			return p
-		}
-		if p, ok := args["filePath"].(string); ok {
+	case "Read", "Edit", "Write":
+		if p := cursorToolArg(args, "path", "filePath", "file_path"); p != "" {
 			return p
 		}
 	case "Grep":
-		if p, ok := args["pattern"].(string); ok {
-			return p
+		if pattern := cursorToolArg(args, "pattern", "regex"); pattern != "" {
+			if dir := cursorToolArg(args, "path", "targetDirectory", "target_directory"); dir != "" {
+				return dir + " · " + pattern
+			}
+			return pattern
 		}
 	case "Glob":
-		if p, ok := args["pattern"].(string); ok {
-			return p
+		if input := cursorGlobInput(args); input != "" {
+			return input
+		}
+	case "List":
+		if dir := cursorToolArg(args, "path", "targetDirectory", "target_directory"); dir != "" {
+			return dir
+		}
+	case "Search":
+		if query := cursorToolArg(args, "query", "pattern"); query != "" {
+			return query
+		}
+	case "WebFetch":
+		if url := cursorToolArg(args, "url"); url != "" {
+			return url
 		}
 	}
 
@@ -517,6 +526,32 @@ func extractToolInput(toolName string, call map[string]any) string {
 
 	b, _ := json.Marshal(args)
 	return string(b)
+}
+
+func cursorGlobInput(args map[string]any) string {
+	// Cursor's stream-json uses protobuf camelCase, while its stored
+	// history uses snake_case. Older CLI versions used plain pattern.
+	pattern := cursorToolArg(args, "globPattern", "glob_pattern", "pattern")
+	dir := cursorToolArg(args, "targetDirectory", "target_directory", "path")
+	if pattern != "" {
+		if dir != "" && !filepath.IsAbs(pattern) {
+			return filepath.Join(dir, pattern)
+		}
+		return pattern
+	}
+	if dir != "" {
+		return dir
+	}
+	return ""
+}
+
+func cursorToolArg(args map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := args[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (cs *cursorSession) handleResult(raw map[string]any) {
