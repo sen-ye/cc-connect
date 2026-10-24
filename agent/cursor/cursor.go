@@ -34,6 +34,7 @@ type Agent struct {
 	workDir      string
 	model        string
 	mode         string
+	backend      string
 	cmd          string   // CLI binary name, default "agent"
 	cliExtraArgs []string // extra args from cmd after the binary name
 	configEnv    []string // env vars from [projects.agent.options.env]
@@ -51,6 +52,14 @@ func New(opts map[string]any) (core.Agent, error) {
 	model, _ := opts["model"].(string)
 	mode, _ := opts["mode"].(string)
 	mode = normalizeMode(mode)
+	backend, _ := opts["backend"].(string)
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend == "" {
+		backend = "print"
+	}
+	if backend != "print" && backend != "acp" {
+		return nil, fmt.Errorf("cursor: unknown backend %q (want print or acp)", backend)
+	}
 	cmd, extraArgs := core.ParseCmdOpts(opts, "agent")
 	if _, err := exec.LookPath(cmd); err != nil {
 		return nil, fmt.Errorf("cursor: %q CLI not found in PATH, install with: npm i -g @anthropic-ai/cursor-agent (or from Cursor IDE settings)", cmd)
@@ -60,6 +69,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		workDir:      workDir,
 		model:        model,
 		mode:         mode,
+		backend:      backend,
 		cmd:          cmd,
 		cliExtraArgs: extraArgs,
 		configEnv:    core.ParseConfigEnv(opts),
@@ -102,7 +112,7 @@ func (a *Agent) GetWorkDir() string {
 func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	opts := map[string]any{"model": a.model, "mode": a.mode}
+	opts := map[string]any{"model": a.model, "mode": a.mode, "backend": a.backend}
 	if a.cmd != "" {
 		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
 	}
@@ -217,6 +227,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	a.mu.RLock()
 	model := a.model
 	mode := a.mode
+	backend := a.backend
 	cmd := a.cmd
 	extraArgs := append([]string{}, a.cliExtraArgs...)
 	workDir := a.workDir
@@ -230,6 +241,13 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 	a.mu.RUnlock()
 
+	useACP, err := resolveCursorBackend(backend, workDir, sessionID, extraEnv)
+	if err != nil {
+		return nil, err
+	}
+	if useACP {
+		return startCursorACP(ctx, cmd, extraArgs, workDir, model, mode, sessionID, extraEnv)
+	}
 	return newCursorSession(ctx, cmd, extraArgs, workDir, model, mode, sessionID, extraEnv)
 }
 
@@ -238,20 +256,45 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 // depending on XDG_CONFIG_HOME and platform; all known locations are scanned.
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
 	workDir := a.GetWorkDir()
-	return listCursorSessions(workDir)
+	a.mu.RLock()
+	env := append(append([]string(nil), a.configEnv...), a.providerEnvLocked()...)
+	a.mu.RUnlock()
+	return listAllCursorSessions(workDir, env)
 }
 
 func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
+	if !validCursorSessionID(sessionID) {
+		return fmt.Errorf("cursor: invalid session identifier")
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cursor: cannot determine home dir: %w", err)
 	}
 	workDir := a.GetWorkDir()
-	dir, err := findCursorSessionDir(homeDir, workDir, sessionID)
-	if err != nil {
-		return err
+	a.mu.RLock()
+	env := append(append([]string(nil), a.configEnv...), a.providerEnvLocked()...)
+	a.mu.RUnlock()
+	configDir := cursorConfigDir(homeDir, env)
+	dirs := []string{cursorACPDir(configDir, sessionID), filepath.Join(configDir, "chats", workspaceHash(workDir), sessionID)}
+	for _, base := range workspaceChatsDirs(homeDir, workDir) {
+		dirs = append(dirs, filepath.Join(base, sessionID))
 	}
-	return os.RemoveAll(dir)
+	found := false
+	for _, dir := range dirs {
+		if _, err := os.Lstat(dir); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("cursor: delete session: %w", err)
+		}
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	return nil
 }
 
 func (a *Agent) Stop() error { return nil }

@@ -53,6 +53,16 @@ During a session, the agent may request tool permissions. Reply **allow** / **de
 
 Use `/ps` (or `/btw`) to add instructions while a task is running. An idle session rejects the command. The delivery confirmation means the bridge sent the request, not that the agent has finished processing it.
 
+Cursor supports this through its optional ACP backend. Keep `type = "cursor"`
+and set `backend = "acp"` alongside `cmd = "agent"` (or your custom launcher) in
+`[projects.agent.options]`. The CLI must support `agent acp`. `/ps` cancels the
+unfinished generation, then submits the additional instruction in the same
+conversation; running tools and subagents may be cancelled. Only the continued
+request completes the task. Existing print-mode chats are copied into ACP
+storage with their native ID preserved; the original database remains intact.
+ACP conversations keep using ACP after the default backend changes. The default
+backend remains `print`, whose running process does not support `/ps` input.
+
 With Pi, enable `rpc = true` for native steering: the supplement is queued for the next model call, after the current assistant turn's tool calls. If Pi has already finished while the bridge is still delivering its reply, the supplement starts a follow-up turn. Pi's default JSON mode keeps its existing one-shot sending behavior; it cannot inject into an already running process.
 
 cc-connect rotates to a fresh session automatically after long inactivity:

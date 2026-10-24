@@ -5675,7 +5675,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				e.send(p, replyCtx, notice)
 			}
 
-		case EventHookRejected:
+		case EventHookRejected, EventTurnSuperseded:
 			// Claude Code emits this between a Stop-hook-rejected draft and its
 			// rewritten answer. Discard only per-segment assistant text state so
 			// final aggregation cannot concatenate the invalid draft.
@@ -5686,6 +5686,19 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			cardAnswerText.Reset()
 			lastRichCardUpdate = time.Time{}
 			lastRichCardLen = 0
+			if event.Type == EventTurnSuperseded {
+				if event.Content != "" {
+					session.AddHistory("user", event.Content)
+					sessions.Save()
+				}
+				sp.discard()
+				state.mu.Lock()
+				if state.pending != nil {
+					state.pending.resolve()
+					state.pending = nil
+				}
+				state.mu.Unlock()
+			}
 
 		case EventThinking:
 			if isEllipsisOnly(event.Content) {
@@ -6103,6 +6116,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// matches other agents. See forwardConfirm in agent/pi/session.go.
 			isAskQuestion := (event.ToolName == "AskUserQuestion" ||
 				event.ToolName == "extension_select") && len(event.Questions) > 0
+			select {
+			case <-event.RequestDone:
+				continue
+			default:
+			}
 
 			state.mu.Lock()
 			autoApprove := state.approveAll
@@ -6172,7 +6190,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				idleTimer.Stop()
 			}
 
-			<-pending.Resolved
+			select {
+			case <-pending.Resolved:
+			case <-event.RequestDone:
+				state.mu.Lock()
+				if state.pending == pending {
+					state.pending = nil
+				}
+				pending.resolve()
+				state.mu.Unlock()
+			}
 			slog.Info("permission resolved", "request_id", event.RequestID)
 
 			// The stream preview was frozen+detached when this permission
@@ -7111,7 +7138,14 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[iKey]
 	e.interactiveMu.Unlock()
-	if !ok || state == nil || state.agentSession == nil || !state.agentSession.Alive() {
+	if !ok || state == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
+		return
+	}
+	state.mu.Lock()
+	agentSession := state.agentSession
+	state.mu.Unlock()
+	if agentSession == nil || !agentSession.Alive() {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
@@ -7120,14 +7154,30 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	// session lock and races with concurrent normal messages on the CLI's
 	// stdin, so reject instead.
 	_, sessions := e.sessionContextForKey(msg.SessionKey)
-	if session := sessions.GetOrCreateActive(msg.SessionKey); !session.Busy() {
+	session := sessions.GetOrCreateActive(msg.SessionKey)
+	if !session.Busy() {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
-	if err := state.agentSession.Send(text, msg.MessageID, msg.Images, msg.Files); err != nil {
+	var err error
+	if appender, ok := agentSession.(MessageAppender); ok {
+		state.mu.Lock()
+		if state.pending != nil {
+			state.pending.resolve()
+			state.pending = nil
+		}
+		state.mu.Unlock()
+		err = appender.AppendMessage(text, msg.MessageID, msg.Images, msg.Files)
+	} else {
+		err = agentSession.Send(text, msg.MessageID, msg.Images, msg.Files)
+	}
+	if err != nil {
 		slog.Error("ps: send failed", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
 		return
+	}
+	if _, ok := agentSession.(MessageAppender); ok {
+		session.TouchUserActivity()
 	}
 	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSent))
 }

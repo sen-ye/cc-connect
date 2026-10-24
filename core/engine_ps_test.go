@@ -14,6 +14,43 @@ type psMessage struct {
 	files     []FileAttachment
 }
 
+type psAppenderSession struct{ *psAttachmentSession }
+
+func (s *psAppenderSession) Send(string, string, []ImageAttachment, []FileAttachment) error {
+	return errors.New("previous turn is still running")
+}
+
+func (s *psAppenderSession) AppendMessage(text, id string, images []ImageAttachment, files []FileAttachment) error {
+	return s.psAttachmentSession.Send(text, id, images, files)
+}
+
+// A running single-request backend needs its append protocol, not another Send.
+func TestCmdPs_UsesAppenderAndPreservesAttachments(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	s := &psAppenderSession{newPsAttachmentSession()}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	key := "test:append"
+	e.interactiveStates[key] = &interactiveState{agentSession: s, platform: p}
+	session := e.sessions.GetOrCreateActive(key)
+	gen, _ := session.TryLock()
+	defer session.Unlock(gen)
+	images := []ImageAttachment{{MimeType: "image/png", Data: []byte("screenshot")}}
+	files := []FileAttachment{{FileName: "notes.txt", Data: []byte("notes")}}
+	e.ReceiveMessage(p, &Message{SessionKey: key, MessageID: "append", Content: "/ps keep the original task", Images: images, Files: files, ReplyCtx: "ctx"})
+	if got := p.getSent(); len(got) != 1 || got[0] != e.i18n.T(MsgPsSent) {
+		t.Fatalf("append was rejected: %v", got)
+	}
+	select {
+	case got := <-s.calls:
+		if !reflect.DeepEqual(got, psMessage{text: "keep the original task", messageID: "append", images: images, files: files}) {
+			t.Fatalf("lost supplement: %#v", got)
+		}
+	default:
+		t.Fatal("no append request")
+	}
+}
+
 type psAttachmentSession struct {
 	*cujAgentSession
 	calls   chan psMessage

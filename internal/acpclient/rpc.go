@@ -1,4 +1,4 @@
-package acp
+package acpclient
 
 import (
 	"bufio"
@@ -169,6 +169,16 @@ func (t *transport) cancelAll(err error) {
 }
 
 func (t *transport) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	wait, err := t.beginCall(ctx, method, params)
+	if err != nil {
+		return nil, err
+	}
+	return wait()
+}
+
+// beginCall writes a request before returning. Waiting for the response may be
+// delegated to a turn worker without delaying the delivery acknowledgement.
+func (t *transport) beginCall(ctx context.Context, method string, params any) (func() (json.RawMessage, error), error) {
 	id := t.nextID.Add(1)
 	key := fmt.Sprintf("%d", id)
 	ch := make(chan rpcOutcome, 1)
@@ -188,18 +198,20 @@ func (t *transport) call(ctx context.Context, method string, params any) (json.R
 		t.pendingMu.Unlock()
 		return nil, fmt.Errorf("acp: write %s: %w", method, err)
 	}
-	select {
-	case <-ctx.Done():
-		t.pendingMu.Lock()
-		delete(t.pending, key)
-		t.pendingMu.Unlock()
-		return nil, ctx.Err()
-	case out := <-ch:
-		if out.err != nil {
-			return nil, out.err
+	return func() (json.RawMessage, error) {
+		select {
+		case <-ctx.Done():
+			t.pendingMu.Lock()
+			delete(t.pending, key)
+			t.pendingMu.Unlock()
+			return nil, ctx.Err()
+		case out := <-ch:
+			if out.err != nil {
+				return nil, out.err
+			}
+			return out.result, nil
 		}
-		return out.result, nil
-	}
+	}, nil
 }
 
 func (t *transport) sendNotification(method string, params any) error {

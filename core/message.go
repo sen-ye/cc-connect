@@ -451,6 +451,7 @@ type EventType string
 const (
 	EventText              EventType = "text"               // intermediate or final text
 	EventHookRejected      EventType = "hook_rejected"      // Stop hook rejected prior assistant text
+	EventTurnSuperseded    EventType = "turn_superseded"    // an appended instruction replaces the unfinished generation
 	EventToolUse           EventType = "tool_use"           // tool invocation info
 	EventToolResult        EventType = "tool_result"        // tool execution result
 	EventResult            EventType = "result"             // final aggregated result
@@ -498,16 +499,17 @@ type UserQuestionOption struct {
 type Event struct {
 	Type                     EventType
 	Content                  string
-	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
-	ToolInput                string         // human-readable summary of tool input
-	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
-	ToolResult               string         // populated for EventToolResult
-	ToolStatus               string         // optional status for EventToolResult (e.g. completed/failed)
-	ToolExitCode             *int           // optional exit code for EventToolResult
-	ToolSuccess              *bool          // optional success flag for EventToolResult
-	SessionID                string         // agent-managed session ID for conversation continuity
-	RequestID                string         // unique request ID for EventPermissionRequest
-	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
+	ToolName                 string          // populated for EventToolUse, EventPermissionRequest
+	ToolInput                string          // human-readable summary of tool input
+	ToolInputRaw             map[string]any  // raw tool input (for EventPermissionRequest, used in allow response)
+	ToolResult               string          // populated for EventToolResult
+	ToolStatus               string          // optional status for EventToolResult (e.g. completed/failed)
+	ToolExitCode             *int            // optional exit code for EventToolResult
+	ToolSuccess              *bool           // optional success flag for EventToolResult
+	SessionID                string          // agent-managed session ID for conversation continuity
+	RequestID                string          // unique request ID for EventPermissionRequest
+	RequestDone              <-chan struct{} `json:"-"` // optional: originating turn ended; permission is obsolete
+	Questions                []UserQuestion  // populated when ToolName == "AskUserQuestion"
 	Done                     bool
 	Error                    error
 	Retry                    *AgentRetry

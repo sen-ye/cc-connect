@@ -1,11 +1,10 @@
-package acp
+package acpclient
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -36,7 +35,19 @@ type acpSession struct {
 	acpSessMu sync.RWMutex
 	acpSessID string
 
-	sendMu sync.Mutex
+	sendMu              sync.Mutex
+	turnMu              sync.Mutex
+	turn                *asyncTurn
+	interruptible       bool
+	strictResume        bool
+	parameterizedModels bool
+	replaying           atomic.Bool
+	modelsMu            sync.RWMutex
+	currentModel        string
+	errorMapper         func(error) error
+	closeOnce           sync.Once
+	thinkingMu          sync.Mutex
+	thinking            strings.Builder
 
 	permMu   sync.Mutex
 	permByID map[string]permState
@@ -75,14 +86,17 @@ type permState struct {
 // adding optional knobs (initialMode, callbacks) and would otherwise
 // break every call site each time.
 type acpSessionConfig struct {
-	command         string
-	args            []string
-	extraEnv        []string
-	workDir         string
-	resumeSessionID string
-	authMethod      string
-	initialMode     string           // if non-empty, applied via session/set_mode after session/new
-	callbacks       sessionCallbacks // may be nil
+	command                                          string
+	args                                             []string
+	extraEnv                                         []string
+	workDir                                          string
+	resumeSessionID                                  string
+	authMethod                                       string
+	initialMode                                      string // if non-empty, applied via session/set_mode after session/new
+	initialModel                                     string
+	interruptible, strictResume, parameterizedModels bool
+	errorMapper                                      func(error) error
+	callbacks                                        sessionCallbacks // may be nil
 }
 
 func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, error) {
@@ -93,14 +107,18 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &acpSession{
-		workDir:       absWorkDir,
-		events:        make(chan core.Event, 128),
-		ctx:           sessionCtx,
-		cancel:        cancel,
-		permByID:      make(map[string]permState),
-		toolInputByID: make(map[string]string),
-		acpSessID:     cfg.resumeSessionID,
-		callbacks:     cfg.callbacks,
+		workDir:             absWorkDir,
+		events:              make(chan core.Event, 128),
+		ctx:                 sessionCtx,
+		cancel:              cancel,
+		permByID:            make(map[string]permState),
+		toolInputByID:       make(map[string]string),
+		acpSessID:           cfg.resumeSessionID,
+		callbacks:           cfg.callbacks,
+		interruptible:       cfg.interruptible,
+		strictResume:        cfg.strictResume,
+		parameterizedModels: cfg.parameterizedModels,
+		errorMapper:         cfg.errorMapper,
 	}
 	s.alive.Store(true)
 
@@ -119,7 +137,8 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		return nil, fmt.Errorf("acp: stdout pipe: %w", err)
 	}
 	var stderrBuf bytes.Buffer
-	cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+	cmd.Stderr = &stderrBuf
+	cmd.WaitDelay = 3 * time.Second
 
 	s.cmd = cmd
 	s.tr = newTransport(stdout, stdin, s.onNotification, s.onServerRequest)
@@ -134,7 +153,7 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		defer s.wg.Done()
 		s.tr.readLoop(sessionCtx)
 		waitErr := cmd.Wait()
-		if waitErr != nil {
+		if waitErr != nil && sessionCtx.Err() == nil && !s.interruptible {
 			msg := stderrBuf.String()
 			if msg != "" {
 				slog.Error("acp: process exited", "error", waitErr, "stderr", msg)
@@ -164,6 +183,15 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 			)
 		}
 	}
+	if strings.TrimSpace(cfg.initialModel) != "" {
+		if err := s.applyModel(cfg.initialModel); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+	}
+	if s.interruptible {
+		s.emit(core.Event{Type: core.EventText, SessionID: s.currentACPSessionID()})
+	}
 
 	return s, nil
 }
@@ -172,6 +200,8 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 // session/new, and caches any modes the server advertises so
 // SetLiveMode / PermissionModes can answer correctly.
 func (s *acpSession) handshake(resumeSessionID string, authMethod string) error {
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
 	initParams := map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -186,7 +216,10 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 			"version": "1.0.0",
 		},
 	}
-	res, err := s.tr.call(s.ctx, "initialize", initParams)
+	if s.parameterizedModels {
+		initParams["clientCapabilities"].(map[string]any)["_meta"] = map[string]any{"parameterizedModelPicker": true}
+	}
+	res, err := s.tr.call(ctx, "initialize", initParams)
 	if err != nil {
 		return fmt.Errorf("acp: initialize: %w", err)
 	}
@@ -208,7 +241,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	}
 
 	if strings.TrimSpace(authMethod) != "" {
-		if _, err := s.tr.call(s.ctx, "authenticate", map[string]any{
+		if _, err := s.tr.call(ctx, "authenticate", map[string]any{
 			"methodId": authMethod,
 		}); err != nil {
 			return fmt.Errorf("acp: authenticate (%s): %w", authMethod, err)
@@ -242,12 +275,17 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 		// servers advertising `resume` reintroduce the deadlock #2038
 		// was written to fix.
 		if resumeMethod != "" {
-			resumeRes, err := s.tr.call(s.ctx, resumeMethod, map[string]any{
+			s.replaying.Store(true)
+			resumeRes, err := s.tr.call(ctx, resumeMethod, map[string]any{
 				"sessionId":  resumeSessionID,
 				"cwd":        s.workDir,
 				"mcpServers": []any{},
 			})
+			s.replaying.Store(false)
 			if err != nil {
+				if s.strictResume {
+					return fmt.Errorf("acp: resume existing session: %w", err)
+				}
 				slog.Warn("acp: session resume failed, starting new session",
 					"method", resumeMethod, "error", err)
 			} else {
@@ -276,8 +314,12 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 				}
 				s.setACPSessionID(resumedID)
 				s.absorbModes(rr.Modes)
+				s.absorbModel(resumeRes)
 				return nil
 			}
+		}
+		if s.strictResume {
+			return fmt.Errorf("acp: backend cannot restore the existing session")
 		}
 	}
 
@@ -285,7 +327,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 		"cwd":        s.workDir,
 		"mcpServers": []any{},
 	}
-	newRes, err := s.tr.call(s.ctx, "session/new", newParams)
+	newRes, err := s.tr.call(ctx, "session/new", newParams)
 	if err != nil {
 		return fmt.Errorf("acp: session/new: %w", err)
 	}
@@ -301,6 +343,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	}
 	s.setACPSessionID(sn.SessionID)
 	s.absorbModes(sn.Modes)
+	s.absorbModel(newRes)
 	return nil
 }
 
@@ -423,6 +466,33 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	if method != "session/update" {
 		slog.Debug("acp: notification", "method", method)
 		return
+	}
+	if s.replaying.Load() {
+		return
+	}
+	var notification struct {
+		SessionID string `json:"sessionId"`
+		Update    struct {
+			Kind    string `json:"sessionUpdate"`
+			Content struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"update"`
+	}
+	if json.Unmarshal(params, &notification) == nil {
+		if sid := s.currentACPSessionID(); sid != "" && notification.SessionID != "" && notification.SessionID != sid {
+			return
+		}
+		if notification.Update.Kind == "agent_thought_chunk" {
+			s.thinkingMu.Lock()
+			s.thinking.WriteString(notification.Update.Content.Text)
+			s.thinkingMu.Unlock()
+			return
+		}
+		switch notification.Update.Kind {
+		case "agent_message_chunk", "tool_call", "tool_call_update":
+			s.flushThinking()
+		}
 	}
 	s.cacheToolCallInput(params)
 	toolName := s.resolveToolCallName(params)
@@ -601,6 +671,12 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 
 	rawTool := map[string]any{}
 	_ = json.Unmarshal(params, &rawTool)
+	var requestDone <-chan struct{}
+	s.turnMu.Lock()
+	if s.turn != nil {
+		requestDone = s.turn.done
+	}
+	s.turnMu.Unlock()
 
 	// OpenCode ACP bug (#7370): rawInput in request_permission is always {},
 	// but tool_call_update (which arrives right after) has the real input.
@@ -619,6 +695,8 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 			select {
 			case <-s.ctx.Done():
 				return
+			case <-requestDone:
+				return
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
@@ -634,11 +712,18 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 		if toolInput == "" {
 			toolInput = p.ToolCall.ToolCallID
 		}
+		s.permMu.Lock()
+		_, stillPending := s.permByID[reqKey]
+		s.permMu.Unlock()
+		if !stillPending {
+			return
+		}
 
 		slog.Info("acp: permission request", "request_id", reqKey, "tool", toolName, "input", toolInput)
 		s.emit(core.Event{
 			Type:         core.EventPermissionRequest,
 			RequestID:    reqKey,
+			RequestDone:  requestDone,
 			ToolName:     toolName,
 			ToolInput:    toolInput,
 			ToolInputRaw: rawTool,
@@ -648,6 +733,9 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 }
 
 func (s *acpSession) emit(ev core.Event) {
+	if ev.Type == core.EventError && ev.Error != nil && s.errorMapper != nil {
+		ev.Error = s.errorMapper(ev.Error)
+	}
 	if ev.SessionID == "" {
 		ev.SessionID = s.currentACPSessionID()
 	}
@@ -658,6 +746,9 @@ func (s *acpSession) emit(ev core.Event) {
 }
 
 func (s *acpSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	if s.interruptible {
+		return s.sendAsync(prompt, messageID, images, files)
+	}
 	if !s.alive.Load() {
 		return fmt.Errorf("acp: session closed")
 	}
@@ -801,22 +892,26 @@ func (s *acpSession) Alive() bool {
 }
 
 func (s *acpSession) Close() error {
-	s.alive.Store(false)
-	s.cancel()
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-	}
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		close(s.events)
-	case <-time.After(8 * time.Second):
-		slog.Warn("acp: close timed out waiting for I/O loop")
-	}
+	s.closeOnce.Do(func() {
+		s.alive.Store(false)
+		s.cancel()
+		s.sendMu.Lock()
+		s.sendMu.Unlock()
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			close(s.events)
+		case <-time.After(8 * time.Second):
+			slog.Warn("acp: close timed out waiting for I/O loop")
+		}
+	})
 	return nil
 }
 

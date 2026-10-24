@@ -92,6 +92,7 @@ func (s *psSupplementSession) Send(prompt, _ string, _ []ImageAttachment, _ []Fi
 }
 
 func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
+	t.Run("AppenderContinuesWithoutCancelledDraft", testCUJPsAppender)
 	for _, command := range []string{"/ps", "/btw"} {
 		t.Run(command, func(t *testing.T) {
 			p := &stubPlatformEngine{n: "test"}
@@ -143,6 +144,50 @@ func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
 			send(command + " another instruction")
 			waitFor(e.i18n.T(MsgPsNoSession), true)
 		})
+	}
+}
+
+type cujAppendingSession struct{ *psSupplementSession }
+
+func (s *cujAppendingSession) AppendMessage(prompt, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	obsolete := make(chan struct{})
+	close(obsolete)
+	// An old permission event can already be queued when cancellation finishes.
+	s.events <- Event{Type: EventPermissionRequest, RequestID: "obsolete", ToolName: "Read", RequestDone: obsolete}
+	s.events <- Event{Type: EventTurnSuperseded}
+	s.events <- Event{Type: EventText, Content: "continued original task: " + prompt}
+	s.events <- Event{Type: EventResult, Done: true}
+	return nil
+}
+
+func testCUJPsAppender(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	s := &cujAppendingSession{&psSupplementSession{started: make(chan struct{}), events: make(chan Event, 8)}}
+	e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	e.SetStreamPreviewCfg(StreamPreviewCfg{Enabled: false})
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: p}
+	key := "test:append-cuj"
+	send := func(text string) { e.ReceiveMessage(p, &Message{SessionKey: key, Content: text, ReplyCtx: "ctx"}) }
+	send("start held task")
+	select {
+	case <-s.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task not started")
+	}
+	s.events <- Event{Type: EventText, Content: "CANCELLED_DRAFT"}
+	send("/ps include unit tests")
+	env.waitFor("replacement finished", 2*time.Second, func() bool {
+		return !e.sessions.GetOrCreateActive(key).Busy() && env.sentContains("continued original task: include unit tests")
+	})
+	for _, text := range p.getSent() {
+		if strings.Contains(text, "CANCELLED_DRAFT") {
+			t.Fatalf("cancelled draft became final answer: %q", text)
+		}
+	}
+	send("/ps nothing running")
+	if !env.sentContains(e.i18n.T(MsgPsNoSession)) {
+		t.Fatalf("idle supplement accepted: %v", p.getSent())
 	}
 }
 

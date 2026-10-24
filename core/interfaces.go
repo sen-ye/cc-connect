@@ -414,6 +414,13 @@ type AgentSession interface {
 	Close() error
 }
 
+// MessageAppender delivers an additional instruction to the active task.
+// Implementations may cancel the current generation before continuing in the
+// same session. Cancelled generations must not emit a terminal task event.
+type MessageAppender interface {
+	AppendMessage(prompt, messageID string, images []ImageAttachment, files []FileAttachment) error
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"
