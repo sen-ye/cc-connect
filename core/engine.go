@@ -13218,7 +13218,9 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			s.SetActiveProvider(provName)
 			sessions.Save()
 			if sessions == e.sessions && e.providerSaveFunc != nil {
-				_ = e.providerSaveFunc(provName)
+				if err := e.providerSaveFunc(provName); err != nil {
+					slog.Error("failed to save provider", "error", err)
+				}
 			}
 		}
 

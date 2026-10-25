@@ -163,6 +163,18 @@ func TestProjectProviderDefault_PreservesBoundConversations(t *testing.T) {
 	s.SelectProvider("key-a")
 	s.AddHistory("user", "original history")
 	s.SetAgentSessionID("original-native", a.Name())
+	// The upstream persist-before-activate rule must also apply when native
+	// sessions have independent provider bindings.
+	e.providerSaveFunc = func(string) error { return fmt.Errorf("configuration is read-only") }
+	failed := httptest.NewRecorder()
+	(&ManagementServer{}).handleProjectProviders(failed, httptest.NewRequest("POST", "/providers/key-b/activate", nil), e, "key-b/activate")
+	if failed.Code != 500 || a.GetActiveProvider().Name != "key-a" {
+		t.Fatal("failed persistence changed the default provider")
+	}
+	if s.GetAgentSessionID() != "original-native" || s.HistoryLen() != 1 || s.GetActiveProvider() != "key-a" {
+		t.Fatal("failed persistence changed the existing conversation")
+	}
+	e.providerSaveFunc = nil
 	r := httptest.NewRequest("POST", "/providers/key-b/activate", nil)
 	w := httptest.NewRecorder()
 	(&ManagementServer{}).handleProjectProviders(w, r, e, "key-b/activate")

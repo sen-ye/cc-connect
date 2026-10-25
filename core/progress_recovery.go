@@ -62,13 +62,13 @@ func (w *compactProgressWriter) deferPublish(kind MessageErrorKind, err error) {
 	// A rejected redacted frame may become acceptable on the very next event;
 	// retain its existing platform throttle without replaying rejected details.
 	if kind != MessageErrorContentRejected {
-		delay := time.Duration(min(250*(1<<min(w.failures-1, 7)), 30000)) * time.Millisecond
+		delay := time.Duration(min(1<<min(w.failures-1, 5), 30)) * compactProgressRetryInterval
 		if delay < w.minUpdateInterval {
 			delay = w.minUpdateInterval
 		}
 		w.retryAt = w.lastUpdateAt.Add(delay)
 	}
-	if w.failures >= 3 || w.state != ProgressCardStateRunning {
+	if w.failures >= 3 {
 		w.notifyUnavailable()
 	}
 }

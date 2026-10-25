@@ -1368,15 +1368,27 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			action = parts[1]
 		}
 		if action == "activate" && r.Method == http.MethodPost {
-			if !ps.SetActiveProvider(provName) {
+			found := false
+			for _, p := range ps.ListProviders() {
+				if p.Name == provName {
+					found = true
+					break
+				}
+			}
+			if !found {
 				mgmtError(w, http.StatusNotFound, fmt.Sprintf("provider not found: %s", provName))
 				return
 			}
+			if e.providerSaveFunc != nil {
+				if err := e.providerSaveFunc(provName); err != nil {
+					slog.Error("failed to save active provider", "provider", provName, "error", err)
+					mgmtError(w, http.StatusInternalServerError, "failed to persist provider: "+err.Error())
+					return
+				}
+			}
+			ps.SetActiveProvider(provName)
 			if _, scoped := e.agent.(SessionProviderStarter); !scoped {
 				e.resetAllSessions()
-			}
-			if e.providerSaveFunc != nil {
-				_ = e.providerSaveFunc(provName)
 			}
 			mgmtJSON(w, http.StatusOK, map[string]any{
 				"active_provider": provName,
@@ -1404,10 +1416,14 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 				mgmtError(w, http.StatusNotFound, fmt.Sprintf("provider not found: %s", provName))
 				return
 			}
-			ps.SetProviders(remaining)
 			if e.providerRemoveSaveFunc != nil {
-				_ = e.providerRemoveSaveFunc(provName)
+				if err := e.providerRemoveSaveFunc(provName); err != nil {
+					slog.Error("failed to persist provider removal", "provider", provName, "error", err)
+					mgmtError(w, http.StatusInternalServerError, "failed to persist provider removal: "+err.Error())
+					return
+				}
 			}
+			ps.SetProviders(remaining)
 			mgmtOK(w, "provider removed")
 			return
 		}
@@ -1465,12 +1481,16 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			SettingsFile: body.SettingsFile,
 			Env:          body.Env,
 		}
+		if e.providerAddSaveFunc != nil {
+			if err := e.providerAddSaveFunc(prov); err != nil {
+				slog.Error("failed to persist provider", "provider", prov.Name, "error", err)
+				mgmtError(w, http.StatusInternalServerError, "failed to persist provider: "+err.Error())
+				return
+			}
+		}
 		providers := ps.ListProviders()
 		providers = append(providers, prov)
 		ps.SetProviders(providers)
-		if e.providerAddSaveFunc != nil {
-			_ = e.providerAddSaveFunc(prov)
-		}
 		mgmtJSON(w, http.StatusOK, map[string]any{
 			"name":    body.Name,
 			"message": "provider added",

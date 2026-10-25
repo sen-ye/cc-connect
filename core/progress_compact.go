@@ -26,6 +26,9 @@ const (
 	// Bound each platform progress-card API call so a hung upstream request
 	// does not block the whole turn forever.
 	compactProgressAPITimeout = 15 * time.Second
+
+	// Coalesce progress during an outage instead of retrying every tool event.
+	compactProgressRetryInterval = time.Second
 )
 
 type ProgressCardState string
@@ -460,7 +463,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	if w.content == w.lastSent {
 		return true
 	}
-	if time.Now().Before(w.retryAt) {
+	if w.ctx.Err() != nil || time.Now().Before(w.retryAt) {
 		return true
 	}
 
@@ -471,13 +474,14 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 }
 
 // Finalize updates card progress state (running/completed/failed) without
-// appending a new progress entry.
+// appending a new progress entry. It reports whether the final state was sent;
+// false never requests a standalone replay of buffered tool details.
 func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	if !w.enabled || w.style != progressStyleCard || !w.usePayload {
 		return false
 	}
-	if w.failed {
-		return true
+	if w.failed || w.ctx.Err() != nil {
+		return false
 	}
 	if state == "" {
 		state = ProgressCardStateCompleted
@@ -487,7 +491,8 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	if w.content == "" || w.content == w.lastSent {
 		return w.content != ""
 	}
-	return w.publish()
+	w.publish()
+	return w.content == w.lastSent
 }
 
 // publish handles failures without replaying progress as standalone messages.

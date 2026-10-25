@@ -242,8 +242,8 @@ func TestCompactProgressWriter_PublishFailureNeverReplaysRawTools(t *testing.T) 
 				}
 				p.err = failure.err
 				if stage == "finalize" {
-					if !w.Finalize(ProgressCardStateCompleted) {
-						t.Fatal("finalization failure requested a raw fallback")
+					if w.Finalize(ProgressCardStateCompleted) {
+						t.Fatal("failed final update reported success")
 					}
 				} else if !w.AppendEvent(ProgressEntryToolUse, "raw-tool-detail", "shell", "raw-tool-detail") {
 					t.Fatal("publish failure requested a raw tool message")
