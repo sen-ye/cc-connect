@@ -528,21 +528,26 @@ func extractToolInput(toolName string, call map[string]any) string {
 	return string(b)
 }
 
+// cursorGlobInput accepts Cursor's protobuf JSON fields as well as the older
+// aliases. Keep the search directory visible instead of falling back to raw JSON.
 func cursorGlobInput(args map[string]any) string {
-	// Cursor's stream-json uses protobuf camelCase, while its stored
-	// history uses snake_case. Older CLI versions used plain pattern.
-	pattern := cursorToolArg(args, "globPattern", "glob_pattern", "pattern")
-	dir := cursorToolArg(args, "targetDirectory", "target_directory", "path")
-	if pattern != "" {
-		if dir != "" && !filepath.IsAbs(pattern) {
-			return filepath.Join(dir, pattern)
+	firstString := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := args[key].(string); ok && value != "" {
+				return value
+			}
 		}
-		return pattern
+		return ""
 	}
-	if dir != "" {
-		return dir
+	pattern := firstString("globPattern", "glob_pattern", "pattern")
+	directory := firstString("targetDirectory", "target_directory", "path")
+	if pattern == "" {
+		return directory
 	}
-	return ""
+	if directory != "" && !filepath.IsAbs(pattern) {
+		return filepath.Join(directory, pattern)
+	}
+	return pattern
 }
 
 func cursorToolArg(args map[string]any, keys ...string) string {
