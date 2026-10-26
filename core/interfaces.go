@@ -481,6 +481,20 @@ type SessionProviderStarter interface {
 	StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (AgentSession, error)
 }
 
+// SessionServiceTierSupport advertises per-conversation speed controls without
+// starting an agent. A supported session implements SessionServiceTierController.
+type SessionServiceTierSupport interface {
+	SupportsSessionServiceTier() bool
+}
+
+// SessionServiceTierController changes subsequent turns of one native session.
+// "fast" enables Fast; "default" explicitly selects standard processing.
+// GetServiceTier returns an empty string if the effective tier is unknown.
+type SessionServiceTierController interface {
+	SetServiceTier(tier string) error
+	GetServiceTier() string
+}
+
 // MemoryFileProvider is an optional interface for agents that support
 // persistent instruction files (CLAUDE.md, AGENTS.md, GEMINI.md, etc.).
 // The engine uses these paths for the /memory command.

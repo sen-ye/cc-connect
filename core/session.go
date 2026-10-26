@@ -39,10 +39,12 @@ type Session struct {
 	ActiveProvider string `json:"active_provider,omitempty"`
 	// ProviderBound distinguishes a pinned CLI default (empty ActiveProvider)
 	// from a legacy session that has not selected a provider yet.
-	ProviderBound bool           `json:"provider_bound,omitempty"`
-	History       []HistoryEntry `json:"history"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ProviderBound bool `json:"provider_bound,omitempty"`
+	// Empty inherits the agent default; "default" explicitly disables Fast.
+	ServiceTier string         `json:"service_tier,omitempty"`
+	History     []HistoryEntry `json:"history"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 	// LastUserActivity records when a real user message was last received.
 	// Unlike UpdatedAt (bumped by every session.Unlock including heartbeats and
 	// unsolicited agent output), this field is only updated when the engine
@@ -59,10 +61,12 @@ type Session struct {
 	// sessions cannot permanently occupy the active slot.
 	ExplicitActivatedAt time.Time `json:"explicit_activated_at,omitempty"`
 
-	mu        sync.Mutex `json:"-"`
-	busy      bool       `json:"-"`
-	busySince time.Time  `json:"-"` // custom 2026-09-12: when the busy lock was acquired (stale-lock self-heal)
-	lockGen   uint64     `json:"-"` // custom 2026-09-12: lock generation, invalidates late unlocks after BreakStaleLock
+	mu sync.Mutex `json:"-"`
+	// Serializes runtime settings changes with native-session startup.
+	settingsMu sync.Mutex `json:"-"`
+	busy       bool       `json:"-"`
+	busySince  time.Time  `json:"-"` // custom 2026-09-12: when the busy lock was acquired (stale-lock self-heal)
+	lockGen    uint64     `json:"-"` // custom 2026-09-12: lock generation, invalidates late unlocks after BreakStaleLock
 }
 
 // TryLock acquires the busy lock for a new turn. It returns a generation
@@ -808,8 +812,13 @@ func (sm *SessionManager) Save() {
 }
 
 func (sm *SessionManager) saveLocked() {
+	// Existing callers rely on the diagnostics emitted by the writer.
+	_ = sm.saveLockedWithError()
+}
+
+func (sm *SessionManager) saveLockedWithError() error {
 	if sm.storePath == "" {
-		return
+		return nil
 	}
 	sm.saveMu.Lock()
 	defer sm.saveMu.Unlock()
@@ -830,6 +839,7 @@ func (sm *SessionManager) saveLocked() {
 			AgentType:           s.AgentType,
 			ActiveProvider:      s.ActiveProvider,
 			ProviderBound:       s.ProviderBound,
+			ServiceTier:         s.ServiceTier,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
 			History:             append([]HistoryEntry(nil), s.History...),
 			CreatedAt:           s.CreatedAt,
@@ -872,15 +882,17 @@ func (sm *SessionManager) saveLocked() {
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		slog.Error("session: failed to marshal", "error", err)
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(sm.storePath), 0o755); err != nil {
 		slog.Error("session: failed to create dir", "error", err)
-		return
+		return err
 	}
 	if err := AtomicWriteFile(sm.storePath, data, 0o644); err != nil {
 		slog.Error("session: failed to write", "path", sm.storePath, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (sm *SessionManager) load() {

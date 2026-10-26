@@ -1,10 +1,17 @@
 package core
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // startAgentSession resolves a binding for this conversation, not a mutable
 // agent-wide selection. Timer jobs use the same path as ordinary messages.
 func startAgentSession(ctx context.Context, agent Agent, session *Session, sessions *SessionManager, resumeID string) (AgentSession, error) {
+	session.settingsMu.Lock()
+	defer session.settingsMu.Unlock()
+	var started AgentSession
+	var err error
 	if starter, ok := agent.(SessionProviderStarter); ok {
 		defaultName := ""
 		if switcher, ok := agent.(ProviderSwitcher); ok {
@@ -16,10 +23,21 @@ func startAgentSession(ctx context.Context, agent Agent, session *Session, sessi
 		if changed {
 			sessions.Save()
 		}
-		return starter.StartSessionWithProvider(ctx, resumeID, name)
+		started, err = starter.StartSessionWithProvider(ctx, resumeID, name)
+	} else {
+		restoreActiveProviderFromSession(agent, session)
+		started, err = agent.StartSession(ctx, resumeID)
 	}
-	restoreActiveProviderFromSession(agent, session)
-	return agent.StartSession(ctx, resumeID)
+	if err != nil {
+		return nil, err
+	}
+	if err := restoreSessionServiceTier(started, session.GetServiceTier()); err != nil {
+		if closeErr := started.Close(); closeErr != nil {
+			return nil, fmt.Errorf("restore conversation service tier: %w; close session: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("restore conversation service tier: %w", err)
+	}
+	return started, nil
 }
 
 func providerForSession(switcher ProviderSwitcher, session *Session) *ProviderConfig {

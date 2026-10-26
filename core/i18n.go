@@ -361,6 +361,16 @@ const (
 	MsgModelNotSupported     MsgKey = "model_not_supported"
 	MsgModelSwitchSession    MsgKey = "model_switch_session"
 	MsgModelSwitchResponse   MsgKey = "model_switch_response"
+	MsgBuiltinCmdFast        MsgKey = "fast"
+	MsgFastUsage             MsgKey = "fast_usage"
+	MsgFastNotSupported      MsgKey = "fast_not_supported"
+	MsgFastInherited         MsgKey = "fast_inherited"
+	MsgFastOn                MsgKey = "fast_on"
+	MsgFastOff               MsgKey = "fast_off"
+	MsgFastStatus            MsgKey = "fast_status"
+	MsgFastChanged           MsgKey = "fast_changed"
+	MsgFastChangeFailed      MsgKey = "fast_change_failed"
+
 	MsgReasoningCurrent      MsgKey = "reasoning_current"
 	MsgReasoningChanged      MsgKey = "reasoning_changed"
 	MsgReasoningNotSupported MsgKey = "reasoning_not_supported"
@@ -2480,6 +2490,69 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "當前 Agent 不支援模型切換。",
 		LangJapanese:           "このエージェントはモデルの切り替えをサポートしていません。",
 		LangSpanish:            "Este agente no soporta el cambio de modelo.",
+	},
+	MsgBuiltinCmdFast: {
+		LangEnglish:            "View/change Fast for this conversation: [on|off|status]",
+		LangChinese:            "查看/设置本会话 Fast：[on|off|status]",
+		LangTraditionalChinese: "查看/設定本會話 Fast：[on|off|status]",
+		LangJapanese:           "この会話の Fast を表示・変更: [on|off|status]",
+		LangSpanish:            "Ver/cambiar Fast de esta conversación: [on|off|status]",
+	},
+	MsgFastUsage: {
+		LangEnglish:            "Usage: /fast [on|off|status]. Applies only to this conversation.",
+		LangChinese:            "用法：/fast [on|off|status]，仅影响当前会话。",
+		LangTraditionalChinese: "用法：/fast [on|off|status]，僅影響目前會話。",
+		LangJapanese:           "使い方: /fast [on|off|status]。この会話だけに適用します。",
+		LangSpanish:            "Uso: /fast [on|off|status]. Solo afecta a esta conversación.",
+	},
+	MsgFastNotSupported: {
+		LangEnglish:            "This agent backend does not support per-conversation Fast settings.",
+		LangChinese:            "当前 agent 后端不支持会话级 Fast 设置。",
+		LangTraditionalChinese: "目前 agent 後端不支援會話級 Fast 設定。",
+		LangJapanese:           "このエージェントのバックエンドは会話ごとの Fast 設定に対応していません。",
+		LangSpanish:            "Este backend no admite configurar Fast por conversación.",
+	},
+	MsgFastInherited: {
+		LangEnglish:            "Fast: inherit the agent default. Start the conversation to inspect its effective tier.",
+		LangChinese:            "Fast：沿用 agent 默认设置。会话启动后可查看实际档位。",
+		LangTraditionalChinese: "Fast：沿用 agent 預設設定。會話啟動後可查看實際檔位。",
+		LangJapanese:           "Fast: エージェントの既定値を継承。会話開始後に実際の設定を確認できます。",
+		LangSpanish:            "Fast: hereda la configuración del agente. Inicia la conversación para consultar el nivel efectivo.",
+	},
+	MsgFastOn: {
+		LangEnglish:            "on",
+		LangChinese:            "开启",
+		LangTraditionalChinese: "開啟",
+		LangJapanese:           "オン",
+		LangSpanish:            "activado",
+	},
+	MsgFastOff: {
+		LangEnglish:            "off (standard speed)",
+		LangChinese:            "关闭（标准速度）",
+		LangTraditionalChinese: "關閉（標準速度）",
+		LangJapanese:           "オフ（標準速度）",
+		LangSpanish:            "desactivado (velocidad estándar)",
+	},
+	MsgFastStatus: {
+		LangEnglish:            "Fast for this conversation: %s.",
+		LangChinese:            "本会话 Fast：%s。",
+		LangTraditionalChinese: "本會話 Fast：%s。",
+		LangJapanese:           "この会話の Fast: %s。",
+		LangSpanish:            "Fast de esta conversación: %s.",
+	},
+	MsgFastChanged: {
+		LangEnglish:            "Fast for this conversation: %s. Saved for subsequent turns, including after resume or restart. An ongoing turn keeps its current tier.",
+		LangChinese:            "本会话 Fast：%s。已保存，后续轮次及恢复、重启后沿用；正在执行的轮次保持原档位。",
+		LangTraditionalChinese: "本會話 Fast：%s。已儲存，後續輪次及恢復、重啟後沿用；正在執行的輪次維持原檔位。",
+		LangJapanese:           "この会話の Fast: %s。次のターン以降に適用し、再開・再起動後も保持します。実行中のターンは変更しません。",
+		LangSpanish:            "Fast de esta conversación: %s. Guardado para los siguientes turnos, incluso tras reanudar o reiniciar. El turno en curso conserva su nivel.",
+	},
+	MsgFastChangeFailed: {
+		LangEnglish:            "Could not update this conversation’s Fast setting: %s",
+		LangChinese:            "更新本会话 Fast 设置失败：%s",
+		LangTraditionalChinese: "更新本會話 Fast 設定失敗：%s",
+		LangJapanese:           "この会話の Fast 設定を更新できませんでした: %s",
+		LangSpanish:            "No se pudo actualizar Fast para esta conversación: %s",
 	},
 	MsgReasoningCurrent: {
 		LangEnglish:            "Current reasoning effort: %s",

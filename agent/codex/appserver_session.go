@@ -44,6 +44,7 @@ type threadStartResponse struct {
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
+	ServiceTier     *string `json:"serviceTier"`
 	Thread          struct {
 		ID string `json:"id"`
 	} `json:"thread"`
@@ -53,6 +54,7 @@ type threadResumeResponse struct {
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
+	ServiceTier     *string `json:"serviceTier"`
 	Thread          struct {
 		ID string `json:"id"`
 	} `json:"thread"`
@@ -185,9 +187,12 @@ type appServerSession struct {
 	currentTurn  string
 	preambleSent bool
 
-	runtimeMu sync.RWMutex
-	usage     *core.UsageReport
-	context   *core.ContextUsage
+	runtimeMu         sync.RWMutex
+	serviceTierMu     sync.Mutex
+	serviceTier       string
+	serviceTierNotify chan struct{} // protected by runtimeMu; settings acknowledgement
+	usage             *core.UsageReport
+	context           *core.ContextUsage
 }
 
 const (
@@ -375,6 +380,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 			return fmt.Errorf("codex app-server resume returned empty thread id")
 		}
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
+		s.applyReportedServiceTier(resp.ServiceTier)
 		s.threadID.Store(resp.Thread.ID)
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
 		return nil
@@ -388,6 +394,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		return fmt.Errorf("codex app-server start returned empty thread id")
 	}
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
+	s.applyReportedServiceTier(resp.ServiceTier)
 	s.threadID.Store(resp.Thread.ID)
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
@@ -1194,6 +1201,8 @@ func (s *appServerSession) hasPendingApprovals() bool {
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
 	switch method {
+	case "thread/settings/updated":
+		s.handleServiceTierUpdate(paramsRaw)
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsThreadNotification(method, notif.ThreadID) {

@@ -2145,6 +2145,63 @@ func TestCUJ_F2_ModelSwitchLinkedToAgent(t *testing.T) {
 	t.Log("CUJ-F2: model switching is per-agent; covered by agent/*_test.go model tests")
 }
 
+func TestCUJ_F6_FastIsConversationScopedAndSurvivesRestart(t *testing.T) {
+	for _, multiWorkspace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multi_workspace_%v", multiWorkspace), func(t *testing.T) {
+			root, workspace := t.TempDir(), normalizeWorkspacePath(t.TempDir())
+			RegisterAgent("service-tier-test", func(opts map[string]any) (Agent, error) {
+				a := newServiceTierTestAgent()
+				a.dir, _ = opts["work_dir"].(string)
+				return a, nil
+			})
+			p := &stubPlatformEngine{n: "test"}
+			newEngine := func() *Engine {
+				e := NewEngine("test", newServiceTierTestAgent(), []Platform{p}, filepath.Join(root, "sessions.json"), LangEnglish)
+				if multiWorkspace {
+					e.SetMultiWorkspace(root, filepath.Join(root, "bindings.json"))
+					e.workspaceBindings.Bind("project:test", "room", "room", workspace)
+				}
+				t.Cleanup(func() { _ = e.Stop() })
+				return e
+			}
+			e := newEngine()
+			send := func(user, content, want string) {
+				t.Helper()
+				key := "test:room:" + user
+				p.clearSent()
+				e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: user, Content: content, ReplyCtx: "ctx"})
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					_, sessions := e.sessionContextForKey(key)
+					if strings.Contains(strings.Join(p.getSent(), "\n"), want) && !sessions.GetOrCreateActive(key).Busy() {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				t.Fatalf("%s %q: replies=%v, want %q", user, content, p.getSent(), want)
+			}
+			// Preselect standard speed; a second topic still uses global Fast.
+			send("a", "/fast off", "off (standard speed)")
+			send("a", "first task", "runtime tier: default")
+			firstAnswer := strings.Join(p.getSent(), "\n")
+			send("b", "independent task", "runtime tier: fast")
+			// Update an existing native session without replacing its identity.
+			send("a", "/fast on", "Fast for this conversation: on")
+			send("a", "second task", "runtime tier: fast")
+			send("a", "/fast off", "off (standard speed)")
+			send("a", "/stop", "stopped")
+			send("a", "after stop", firstAnswer)
+			if err := e.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			e = newEngine()
+			send("a", "after restart", firstAnswer)
+			send("a", "/fast status", "off (standard speed)")
+			send("b", "after restart", "runtime tier: fast")
+		})
+	}
+}
+
 func TestCUJ_F5_ReasoningSurvivesReapingAndRestart(t *testing.T) {
 	for _, multiWorkspace := range []bool{false, true} {
 		t.Run(fmt.Sprintf("multi_workspace_%v", multiWorkspace), func(t *testing.T) {
