@@ -76,7 +76,14 @@ func TestACPAppendHelperProcess(t *testing.T) {
 				update("agent_thought_chunk", "First half ")
 				update("agent_thought_chunk", "second half")
 				update("agent_message_chunk", fmt.Sprintf("NEW_ANSWER session=%s images=%d", sid, images))
-				respond(q.ID, map[string]any{"stopReason": "end_turn"})
+				result := map[string]any{"stopReason": "end_turn"}
+				if mode == "usage" {
+					_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
+						"sessionId": sid, "update": map[string]any{"sessionUpdate": "usage_update", "used": 64, "size": 128},
+					}})
+					result["usage"] = map[string]any{"inputTokens": 100, "outputTokens": 20, "totalTokens": 120, "cachedReadTokens": 60}
+				}
+				respond(q.ID, result)
 			} else {
 				held = q.ID
 				update("agent_message_chunk", "OLD_DRAFT")

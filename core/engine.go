@@ -10720,7 +10720,6 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
 		return
 	}
-
 	if len(args) == 0 {
 		if !supportsCards(p) {
 			var sb strings.Builder
@@ -10760,7 +10759,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(msg.SessionKey))
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(agent))
 		return
 	}
 
@@ -10794,6 +10793,9 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
+	if len(efforts) == 0 {
+		return e.i18n.T(MsgReasoningNotSupported)
+	}
 	return e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|"))
 }
 
@@ -12971,7 +12973,8 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard(sessionKey)
+		agent, _ := e.sessionContextForKey(sessionKey)
+		return e.renderReasoningCard(agent)
 	case "/mode":
 		return e.renderModeCard()
 	case "/lang":
@@ -13985,8 +13988,7 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard(sessionKey string) *Card {
-	agent, _ := e.sessionContextForKey(sessionKey)
+func (e *Engine) renderReasoningCard(agent Agent) *Card {
 	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))

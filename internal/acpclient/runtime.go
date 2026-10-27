@@ -97,7 +97,7 @@ func (s *acpSession) startAsyncLocked(blocks []any) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		_, err := wait()
+		res, err := wait()
 		s.flushThinking()
 		s.turnMu.Lock()
 		defer s.turnMu.Unlock()
@@ -110,6 +110,7 @@ func (s *acpSession) startAsyncLocked(blocks []any) error {
 		if err != nil {
 			s.emit(core.Event{Type: core.EventError, Error: fmt.Errorf("acp: prompt: %w", err)})
 		} else {
+			s.absorbPromptUsage(res)
 			s.emit(core.Event{Type: core.EventResult, Done: true})
 		}
 	}()
