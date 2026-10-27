@@ -24,7 +24,20 @@ type providerProxy struct {
 
 const providerCatalogPath = "/_cc_connect_models"
 
+type providerProxyOptions struct {
+	ModelCatalogURL         string
+	ReasoningReplayFallback bool
+}
+
 func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*providerProxy, string, error) {
+	options := providerProxyOptions{}
+	if len(catalogURLs) > 0 {
+		options.ModelCatalogURL = catalogURLs[0]
+	}
+	return newProviderProxyWithOptions(baseURL, proxyURL, options)
+}
+
+func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxyOptions) (*providerProxy, string, error) {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -32,13 +45,16 @@ func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*provide
 	if err != nil {
 		return nil, "", fmt.Errorf("codex: provider base_url must be an absolute HTTP(S) URL")
 	}
-	upstreamProxy, err := parseProviderProxyURL(proxyURL)
-	if err != nil {
-		return nil, "", fmt.Errorf("codex: provider proxy_url must be an absolute HTTP(S) URL")
+	var upstreamProxy *url.URL
+	if proxyURL != "" || !options.ReasoningReplayFallback {
+		upstreamProxy, err = parseProviderProxyURL(proxyURL)
+		if err != nil {
+			return nil, "", fmt.Errorf("codex: provider proxy_url must be an absolute HTTP(S) URL")
+		}
 	}
 	var catalog *url.URL
-	if len(catalogURLs) > 0 && catalogURLs[0] != "" {
-		catalog, err = parseProviderProxyURL(catalogURLs[0])
+	if options.ModelCatalogURL != "" {
+		catalog, err = parseProviderProxyURL(options.ModelCatalogURL)
 		if err != nil {
 			return nil, "", fmt.Errorf("codex: model_catalog_url must be an absolute HTTP(S) URL")
 		}
@@ -48,8 +64,13 @@ func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*provide
 		return nil, "", fmt.Errorf("codex: listen for provider proxy: %w", err)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(upstreamProxy)
-	handler := providerProxyHandler(target, catalog, transport)
+	// A replay-only proxy is explicitly direct. Do not inherit the bridge's
+	// corporate HTTP_PROXY when reaching an internal model gateway.
+	transport.Proxy = nil
+	if upstreamProxy != nil {
+		transport.Proxy = http.ProxyURL(upstreamProxy)
+	}
+	handler := providerProxyHandler(target, catalog, transport, options.ReasoningReplayFallback)
 	p := &providerProxy{transport: transport, server: &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}}
 	go func() {
 		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -59,11 +80,14 @@ func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*provide
 	return p, "http://" + listener.Addr().String(), nil
 }
 
-func providerProxyHandler(target, catalog *url.URL, transport *http.Transport) http.Handler {
+func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, replayFallback bool) http.Handler {
 	reverse := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := reverse.Director
 	reverse.Director = func(r *http.Request) { originalDirector(r); r.Host = target.Host }
 	reverse.Transport = transport
+	if replayFallback {
+		reverse.Transport = &reasoningReplayTransport{base: transport}
+	}
 	reverse.FlushInterval = -1
 	reverse.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		// Network errors may embed a proxy URL with credentials. Keep URLs

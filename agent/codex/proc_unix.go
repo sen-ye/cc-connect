@@ -19,6 +19,12 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
+// Foreground provider launchers share the terminal process group with Codex.
+// TERM is graceful; CommandContext.WaitDelay supplies the eventual kill bound.
+func terminateProviderCLI(cmd *exec.Cmd) error {
+	return cmd.Process.Signal(syscall.SIGTERM)
+}
+
 func forceKillCmd(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

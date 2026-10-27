@@ -613,6 +613,8 @@ type CodexProviderConfig struct {
 	WireAPI         string            `toml:"wire_api,omitempty" json:"wire_api,omitempty"`
 	HTTPHeaders     map[string]string `toml:"http_headers,omitempty" json:"http_headers,omitempty"`
 	EnvHTTPHeaders  map[string]string `toml:"env_http_headers,omitempty" json:"env_http_headers,omitempty"`
+	// A cc-connect request-recovery option, not a native Codex provider field.
+	ReasoningReplayFallback bool `toml:"reasoning_replay_fallback,omitempty" json:"reasoning_replay_fallback,omitempty"`
 }
 
 type PlatformConfig struct {
@@ -2958,11 +2960,10 @@ func cloneAgentConfig(in AgentConfig) AgentConfig {
 				}
 			}
 			if in.Providers[i].Codex != nil {
-				p.Codex = &CodexProviderConfig{
-					EnvKey:      in.Providers[i].Codex.EnvKey,
-					WireAPI:     in.Providers[i].Codex.WireAPI,
-					HTTPHeaders: cloneStringMap(in.Providers[i].Codex.HTTPHeaders),
-				}
+				codex := *in.Providers[i].Codex
+				codex.HTTPHeaders = cloneStringMap(codex.HTTPHeaders)
+				codex.EnvHTTPHeaders = cloneStringMap(codex.EnvHTTPHeaders)
+				p.Codex = &codex
 			}
 			out.Providers[i] = p
 		}

@@ -10504,7 +10504,7 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		if !supportsCards(p) {
 			fetchCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 			defer cancel()
-			models := switcher.AvailableModels(fetchCtx)
+			models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, msg.SessionKey)
 
 			var sb strings.Builder
 			current := switcher.GetModel()
@@ -10570,7 +10570,7 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	if modelSwitchNeedsLookup(target) {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 		defer cancel()
-		models := switcher.AvailableModels(fetchCtx)
+		models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, msg.SessionKey)
 		target = resolveModelSwitchTarget(target, models)
 	}
 
@@ -13060,7 +13060,7 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 	target = strings.TrimSpace(target)
 	if modelSwitchNeedsLookup(target) {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
-		models := switcher.AvailableModels(fetchCtx)
+		models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, sessionKey)
 		target = resolveModelSwitchTarget(target, models)
 		cancel()
 	}
@@ -13136,7 +13136,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 		target = strings.TrimSpace(target)
 		if modelSwitchNeedsLookup(target) {
-			models := switcher.AvailableModels(fetchCtx)
+			models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, sessionKey)
 			target = resolveModelSwitchTarget(target, models)
 		}
 		cancel()
@@ -13920,9 +13920,9 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 		return e.renderModelSwitchingCard(ms.target)
 	}
 
-	agent := e.agent
+	agent, sessions := e.agent, e.sessions
 	if sessionKey != "" {
-		agent, _ = e.sessionContextForKey(sessionKey)
+		agent, sessions = e.sessionContextForKey(sessionKey)
 	}
 
 	switcher, ok := agent.(ModelSwitcher)
@@ -13932,7 +13932,7 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 
 	fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
 	defer cancel()
-	models := switcher.AvailableModels(fetchCtx)
+	models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, sessionKey)
 	current := switcher.GetModel()
 
 	var sb strings.Builder

@@ -17,6 +17,95 @@ timer 复用会话时也使用目标会话的绑定。
 先 `/new` 再选择。原会话的 session ID 和历史保留。绑定的配置被删除或恢复失败时，
 不会静默改用其他 key，也不会因为恢复失败而自动开一个空白对话。
 
+## 网关切换账号后的加密 reasoning 恢复
+
+对于可能在后端账号之间路由的 Responses 网关，可以为单个 provider 启用：
+
+```toml
+[[projects.agent.providers]]
+name = "Gateway"
+base_url = "https://gateway.example/openai?api-version=2024-03-01-preview"
+
+[projects.agent.providers.codex]
+wire_api = "responses"
+reasoning_replay_fallback = true
+
+[projects.agent.providers.codex.env_http_headers]
+api-key = "GATEWAY_API_KEY"
+```
+
+此选项默认关闭。开启后，每个原生会话使用独立的本地代理；不配置 `proxy_url` 时，
+该代理直接连接网关，不继承 cc-connect 的公司 HTTP 代理。配置里的查询参数和请求
+认证头会保留，不需要把 key 写入 URL 或启动参数。
+
+第一份请求始终原样发送。仅当 `POST .../responses` 返回 HTTP 400，错误含
+`invalid_encrypted_content`，且请求中确有可清理的 reasoning 项时，代理才补发一次：
+保留 reasoning summary、用户/助手正文及工具调用，删除 reasoning 的加密状态、
+`content` 和 `id`；没有 summary 的加密 reasoning 项整体省略。该恢复会失去旧的
+隐藏推理连续性，但不修改原生 rollout 或切换 provider。
+
+第二份响应直接返回，不递归重试。HTTP 200/SSE 内失败、流中断、429/5xx、compaction
+密文、`previous_response_id` 等不在此修复范围。压缩请求、超过 32 MiB 的请求、超过
+1 MiB 的错误响应也仅透传。实际额外请求是这一层的一次重试；CLI 自己可能另有重试。
+
+建议配置该 provider 的显式 `models` 列表；模型配置服务和推理接口可能采用不同的
+URL 与鉴权，不能把 `/models` 返回 404 当成推理 key 失效。新增 provider 不会自动
+替换默认项，也不会改变已有会话的账号绑定。
+
+## 独立终端入口
+
+`cmd/codex-provider` 可复用同一套代理启动交互 CLI，不依赖 cc-connect 服务进程。
+它读取独立 TOML，执行原生 Codex 并保持终端输入输出直通；进程结束后关闭代理。
+使用 `--no-daemon`，避免短生命周期的代理被共享后台服务继续使用。
+
+```bash
+go build -o codex-provider ./cmd/codex-provider
+./codex-provider --config /path/to/provider.toml -- -m model-id
+./codex-provider --config /path/to/provider.toml -- resume SESSION_UUID
+```
+
+配置格式如下；`provider` 的字段与 cc-connect 单个 provider 一致，凭据通过环境提供。
+`binary` 建议指向原生 Codex 可执行文件，让 TERM/HUP 直接传递给 CLI。
+
+```toml
+binary = "/path/to/native/codex"
+model_catalog_json = "/path/to/provider-models.json" # 可选，Codex 格式的专用模型目录
+[provider]
+name = "Gateway"
+base_url = "https://gateway.example/openai?api-version=2024-03-01-preview"
+model = "model-id"
+models = [{model = "model-id"}, {model = "another-model-id"}]
+[provider.codex]
+reasoning_replay_fallback = true
+[provider.codex.env_http_headers]
+api-key = "GATEWAY_API_KEY"
+```
+
+启动时的 `-m` 必须属于配置的模型列表。恢复时不覆盖已保存的模型；`resume`/`fork`
+要求明确的原生 session UUID，并读取本地历史确认它属于同一 provider。无参数 picker
+和 `--last` 不受支持；其他 provider 的历史请使用原入口恢复。此检查不会修改历史。
+终端 Ctrl-C 由原生 Codex 处理，不会因取消一轮任务而提前关闭代理。
+
+本机的 `codex-seed` 使用上述入口，凭据读取脚本为 `tools/codex-seed.py`：
+
+```bash
+codex-seed                         # gpt-6-astra
+codex-seed -m es1-grape-g61s
+codex-seed resume SESSION_UUID
+```
+
+脚本优先读取 `CC_CODE_ROUTER_API_KEY` / `SEED_CODE_ROUTER_API_KEY`，否则读取
+`~/.codex/code-router-auth.json`，不会将 key 写到 argv 或配置。独立配置、模型目录和
+固定 affinity 保存在 `~/.config/codex-seed/`，程序在 `~/.local/share/codex-seed/`。
+它与普通 Codex 共用原生历史和用户设置；全局默认 provider 保持不变。
+
+Maso 在 `packages/utils/src/maso_utils/providers.py` 中通过带 Bearer 认证的
+`POST /cowork/api/v1/llm-configs` 取得配置，然后按协议和 endpoint 选择模型。
+该响应包括凭据，不应原样保存或输出。它不是 Codex 的标准 `/models` 目录；
+模型配置中的 high/xhigh/max 项是同一 model ID 的不同预设。本机 Seed 仅列出
+`gpt-6-astra` 和 `es1-grape-g61s`。后者的本地 CLI 元数据基于现有 GPT-6.1 Sol
+模板，实际请求保留 `es1-grape-g61s` 名称，不构成网关能力或上下文上限保证。
+
 ## 每条会话独立设置 Fast
 
 使用 Codex `app_server` 后端时，可在当前飞书话题中发送：

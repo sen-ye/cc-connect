@@ -906,20 +906,7 @@ func main() {
 			return config.SaveActiveProvider(projName, providerName)
 		})
 		engine.SetProviderAddSaveFunc(func(p core.ProviderConfig) error {
-			cp := config.ProviderConfig{
-				Name: p.Name, APIKey: p.APIKey, BaseURL: p.BaseURL,
-				Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
-				SettingsFile: p.SettingsFile,
-			}
-			if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" {
-				cp.Codex = &config.CodexProviderConfig{
-					WireAPI: p.CodexWireAPI, HTTPHeaders: p.CodexHTTPHeaders,
-					EnvKey: p.CodexEnvKey, EnvHTTPHeaders: p.CodexEnvHTTPHeaders,
-					ProxyURL:        p.CodexProxyURL,
-					ModelCatalogURL: p.CodexModelCatalogURL,
-				}
-			}
-			return config.AddProviderToConfig(projName, cp)
+			return config.AddProviderToConfig(projName, coreProviderToConfig(p))
 		})
 		engine.SetProviderRemoveSaveFunc(func(name string) error {
 			return config.RemoveProviderFromConfig(projName, name)
@@ -1987,6 +1974,27 @@ func configProviderToCore(p config.ProviderConfig) core.ProviderConfig {
 		c.CodexEnvHTTPHeaders = p.Codex.EnvHTTPHeaders
 		c.CodexProxyURL = p.Codex.ProxyURL
 		c.CodexModelCatalogURL = p.Codex.ModelCatalogURL
+		c.CodexReasoningReplayFallback = p.Codex.ReasoningReplayFallback
+	}
+	return c
+}
+
+// coreProviderToConfig is shared by the project provider-add persistence path
+// and its round-trip tests. Environment header values remain variable names.
+func coreProviderToConfig(p core.ProviderConfig) config.ProviderConfig {
+	c := config.ProviderConfig{
+		Name: p.Name, APIKey: p.APIKey, BaseURL: p.BaseURL,
+		Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
+		SettingsFile: p.SettingsFile,
+	}
+	if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" || p.CodexReasoningReplayFallback {
+		c.Codex = &config.CodexProviderConfig{
+			WireAPI: p.CodexWireAPI, HTTPHeaders: p.CodexHTTPHeaders,
+			EnvKey: p.CodexEnvKey, EnvHTTPHeaders: p.CodexEnvHTTPHeaders,
+			ProxyURL:                p.CodexProxyURL,
+			ModelCatalogURL:         p.CodexModelCatalogURL,
+			ReasoningReplayFallback: p.CodexReasoningReplayFallback,
+		}
 	}
 	return c
 }
@@ -2074,8 +2082,13 @@ func configProviderToGlobal(p config.ProviderConfig) core.GlobalProviderInfo {
 	}
 	if p.Codex != nil {
 		info.Codex = &core.GlobalCodexConfig{
-			WireAPI:     p.Codex.WireAPI,
-			HTTPHeaders: p.Codex.HTTPHeaders,
+			WireAPI:                 p.Codex.WireAPI,
+			HTTPHeaders:             p.Codex.HTTPHeaders,
+			EnvKey:                  p.Codex.EnvKey,
+			EnvHTTPHeaders:          p.Codex.EnvHTTPHeaders,
+			ProxyURL:                p.Codex.ProxyURL,
+			ModelCatalogURL:         p.Codex.ModelCatalogURL,
+			ReasoningReplayFallback: p.Codex.ReasoningReplayFallback,
 		}
 	}
 	return info
@@ -2109,8 +2122,13 @@ func globalProviderToConfig(info core.GlobalProviderInfo) config.ProviderConfig 
 	}
 	if info.Codex != nil {
 		p.Codex = &config.CodexProviderConfig{
-			WireAPI:     info.Codex.WireAPI,
-			HTTPHeaders: info.Codex.HTTPHeaders,
+			WireAPI:                 info.Codex.WireAPI,
+			HTTPHeaders:             info.Codex.HTTPHeaders,
+			EnvKey:                  info.Codex.EnvKey,
+			EnvHTTPHeaders:          info.Codex.EnvHTTPHeaders,
+			ProxyURL:                info.Codex.ProxyURL,
+			ModelCatalogURL:         info.Codex.ModelCatalogURL,
+			ReasoningReplayFallback: info.Codex.ReasoningReplayFallback,
 		}
 	}
 	return p

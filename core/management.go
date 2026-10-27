@@ -163,8 +163,13 @@ type GlobalModelEntry struct {
 
 // GlobalCodexConfig holds Codex-specific provider settings for the management API.
 type GlobalCodexConfig struct {
-	WireAPI     string            `json:"wire_api,omitempty"`
-	HTTPHeaders map[string]string `json:"http_headers,omitempty"`
+	WireAPI                 string            `json:"wire_api,omitempty"`
+	HTTPHeaders             map[string]string `json:"http_headers,omitempty"`
+	EnvKey                  string            `json:"env_key,omitempty"`
+	EnvHTTPHeaders          map[string]string `json:"env_http_headers,omitempty"`
+	ProxyURL                string            `json:"proxy_url,omitempty"`
+	ModelCatalogURL         string            `json:"model_catalog_url,omitempty"`
+	ReasoningReplayFallback bool              `json:"reasoning_replay_fallback,omitempty"`
 }
 
 func (m *ManagementServer) SetListGlobalProviders(fn func() ([]GlobalProviderInfo, error)) {
@@ -1456,13 +1461,14 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 
 	case http.MethodPost:
 		var body struct {
-			Name         string            `json:"name"`
-			APIKey       string            `json:"api_key"`
-			BaseURL      string            `json:"base_url"`
-			Model        string            `json:"model"`
-			Thinking     string            `json:"thinking"`
-			SettingsFile string            `json:"settings_file"`
-			Env          map[string]string `json:"env"`
+			Name         string             `json:"name"`
+			APIKey       string             `json:"api_key"`
+			BaseURL      string             `json:"base_url"`
+			Model        string             `json:"model"`
+			Thinking     string             `json:"thinking"`
+			SettingsFile string             `json:"settings_file"`
+			Env          map[string]string  `json:"env"`
+			Codex        *GlobalCodexConfig `json:"codex,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1480,6 +1486,15 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			Thinking:     body.Thinking,
 			SettingsFile: body.SettingsFile,
 			Env:          body.Env,
+		}
+		if body.Codex != nil {
+			prov.CodexWireAPI = body.Codex.WireAPI
+			prov.CodexHTTPHeaders = body.Codex.HTTPHeaders
+			prov.CodexEnvKey = body.Codex.EnvKey
+			prov.CodexEnvHTTPHeaders = body.Codex.EnvHTTPHeaders
+			prov.CodexProxyURL = body.Codex.ProxyURL
+			prov.CodexModelCatalogURL = body.Codex.ModelCatalogURL
+			prov.CodexReasoningReplayFallback = body.Codex.ReasoningReplayFallback
 		}
 		if e.providerAddSaveFunc != nil {
 			if err := e.providerAddSaveFunc(prov); err != nil {

@@ -48,9 +48,11 @@ func prepareProviderRuntime(provider *core.ProviderConfig, extraEnv []string) (p
 		return cfg, nil
 	}
 	cfg.baseURL = provider.BaseURL
-	if provider.CodexProxyURL != "" {
+	if provider.CodexProxyURL != "" || provider.CodexReasoningReplayFallback {
 		var err error
-		cfg.proxy, cfg.baseURL, err = newProviderProxy(provider.BaseURL, provider.CodexProxyURL, provider.CodexModelCatalogURL)
+		cfg.proxy, cfg.baseURL, err = newProviderProxyWithOptions(provider.BaseURL, provider.CodexProxyURL, providerProxyOptions{
+			ModelCatalogURL: provider.CodexModelCatalogURL, ReasoningReplayFallback: provider.CodexReasoningReplayFallback,
+		})
 		if err != nil {
 			return cfg, err
 		}

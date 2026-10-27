@@ -463,6 +463,8 @@ type ProviderConfig struct {
 	CodexEnvHTTPHeaders  map[string]string // HTTP header name -> environment variable
 	CodexProxyURL        string            // optional fixed HTTP(S) network proxy for this provider
 	CodexModelCatalogURL string            // optional full URL of the Codex-native model catalog
+	// Opt in to one lossy retry when a Responses endpoint rejects encrypted reasoning.
+	CodexReasoningReplayFallback bool
 }
 
 // ProviderSwitcher is an optional interface for agents that support multiple API providers.

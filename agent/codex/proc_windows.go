@@ -24,6 +24,10 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }
 
+func terminateProviderCLI(cmd *exec.Cmd) error {
+	return cmd.Process.Kill()
+}
+
 func forceKillCmd(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
