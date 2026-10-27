@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -27,6 +29,8 @@ const providerCatalogPath = "/_cc_connect_models"
 type providerProxyOptions struct {
 	ModelCatalogURL         string
 	ReasoningReplayFallback bool
+	MaxOutputTokens         int
+	ProviderName            string
 }
 
 func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*providerProxy, string, error) {
@@ -38,6 +42,9 @@ func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*provide
 }
 
 func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxyOptions) (*providerProxy, string, error) {
+	if options.MaxOutputTokens < 0 {
+		return nil, "", fmt.Errorf("codex: provider max_output_tokens must not be negative")
+	}
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -46,7 +53,7 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 		return nil, "", fmt.Errorf("codex: provider base_url must be an absolute HTTP(S) URL")
 	}
 	var upstreamProxy *url.URL
-	if proxyURL != "" || !options.ReasoningReplayFallback {
+	if proxyURL != "" || (!options.ReasoningReplayFallback && options.MaxOutputTokens == 0) {
 		upstreamProxy, err = parseProviderProxyURL(proxyURL)
 		if err != nil {
 			return nil, "", fmt.Errorf("codex: provider proxy_url must be an absolute HTTP(S) URL")
@@ -70,7 +77,7 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 	if upstreamProxy != nil {
 		transport.Proxy = http.ProxyURL(upstreamProxy)
 	}
-	handler := providerProxyHandler(target, catalog, transport, options.ReasoningReplayFallback)
+	handler := providerProxyHandler(target, catalog, transport, options)
 	p := &providerProxy{transport: transport, server: &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}}
 	go func() {
 		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -80,16 +87,27 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 	return p, "http://" + listener.Addr().String(), nil
 }
 
-func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, replayFallback bool) http.Handler {
+func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, options providerProxyOptions) http.Handler {
 	reverse := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := reverse.Director
 	reverse.Director = func(r *http.Request) { originalDirector(r); r.Host = target.Host }
 	reverse.Transport = transport
-	if replayFallback {
+	if options.ReasoningReplayFallback {
 		reverse.Transport = &reasoningReplayTransport{base: transport}
+	}
+	if options.MaxOutputTokens > 0 {
+		reverse.Transport = &providerOutputLimitTransport{base: reverse.Transport, limit: options.MaxOutputTokens}
+	}
+	reverse.ModifyResponse = func(response *http.Response) error {
+		logProviderHTTPFailure(response, options.ProviderName, target.Hostname())
+		return nil
 	}
 	reverse.FlushInterval = -1
 	reverse.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
+			slog.Debug("codex: provider request canceled", "target_host", target.Hostname(), "provider", options.ProviderName)
+			return
+		}
 		// Network errors may embed a proxy URL with credentials. Keep URLs
 		// and credentials out of both the client response and runtime log.
 		slog.Warn("codex: provider proxy request failed", "target_host", target.Host, "error_type", fmt.Sprintf("%T", err))

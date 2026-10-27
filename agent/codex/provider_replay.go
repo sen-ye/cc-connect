@@ -45,7 +45,7 @@ func (t *reasoningReplayTransport) RoundTrip(request *http.Request) (*http.Respo
 	originalBody := response.Body
 	prefix, readErr := io.ReadAll(io.LimitReader(originalBody, maxReplayErrorBytes+1))
 	response.Body = &replayResponseBody{Reader: io.MultiReader(bytes.NewReader(prefix), originalBody), Closer: originalBody}
-	if readErr != nil || len(prefix) > maxReplayErrorBytes || !bytes.Contains(prefix, []byte("invalid_encrypted_content")) {
+	if readErr != nil || len(prefix) > maxReplayErrorBytes || !replayRefusalMatches(prefix, body) {
 		return response, nil
 	}
 	repaired, changed := stripEncryptedReasoning(body)
@@ -66,6 +66,32 @@ func (t *reasoningReplayTransport) RoundTrip(request *http.Request) (*http.Respo
 	// Call the underlying transport directly: the second response is final,
 	// regardless of status, and its SSE body remains streamed without buffering.
 	return t.base.RoundTrip(retry)
+}
+
+// Maso's Python Responses client also recognizes this continuation identity
+// error, but only when the request really contains encrypted reasoning.
+func replayRefusalMatches(errorBody, requestBody []byte) bool {
+	if bytes.Contains(errorBody, []byte("invalid_encrypted_content")) {
+		return true
+	}
+	if !bytes.Contains(errorBody, []byte("Conflicting authenticated continuation identities")) {
+		return false
+	}
+	var request struct {
+		Input []struct {
+			Type      string          `json:"type"`
+			Encrypted json.RawMessage `json:"encrypted_content"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(requestBody, &request) != nil {
+		return false
+	}
+	for _, item := range request.Input {
+		if item.Type == "reasoning" && replayValuePresent(item.Encrypted) {
+			return true
+		}
+	}
+	return false
 }
 
 type replayResponseBody struct {

@@ -613,6 +613,8 @@ type CodexProviderConfig struct {
 	WireAPI         string            `toml:"wire_api,omitempty" json:"wire_api,omitempty"`
 	HTTPHeaders     map[string]string `toml:"http_headers,omitempty" json:"http_headers,omitempty"`
 	EnvHTTPHeaders  map[string]string `toml:"env_http_headers,omitempty" json:"env_http_headers,omitempty"`
+	// A cc-connect request default, not a native Codex provider field; 0 disables injection.
+	MaxOutputTokens int `toml:"max_output_tokens,omitzero" json:"max_output_tokens,omitempty"`
 	// A cc-connect request-recovery option, not a native Codex provider field.
 	ReasoningReplayFallback bool `toml:"reasoning_replay_fallback,omitempty" json:"reasoning_replay_fallback,omitempty"`
 }

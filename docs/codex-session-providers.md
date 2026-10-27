@@ -29,6 +29,7 @@ base_url = "https://gateway.example/openai?api-version=2024-03-01-preview"
 [projects.agent.providers.codex]
 wire_api = "responses"
 reasoning_replay_fallback = true
+max_output_tokens = 64000 # 可选，仅在请求没有输出预算时补入
 
 [projects.agent.providers.codex.env_http_headers]
 api-key = "GATEWAY_API_KEY"
@@ -38,8 +39,10 @@ api-key = "GATEWAY_API_KEY"
 该代理直接连接网关，不继承 cc-connect 的公司 HTTP 代理。配置里的查询参数和请求
 认证头会保留，不需要把 key 写入 URL 或启动参数。
 
-第一份请求始终原样发送。仅当 `POST .../responses` 返回 HTTP 400，错误含
-`invalid_encrypted_content`，且请求中确有可清理的 reasoning 项时，代理才补发一次：
+未启用输出预算时，第一份请求始终原样发送。仅当 `POST .../responses` 返回 HTTP 400，
+错误含 `invalid_encrypted_content`，且请求中确有可清理的 reasoning 项时，代理才补发一次。
+与 Maso Python 客户端一致，还识别 `Conflicting authenticated continuation identities`，
+但此时必须确认请求里存在 `reasoning.encrypted_content`。补发时：
 保留 reasoning summary、用户/助手正文及工具调用，删除 reasoning 的加密状态、
 `content` 和 `id`；没有 summary 的加密 reasoning 项整体省略。该恢复会失去旧的
 隐藏推理连续性，但不修改原生 rollout 或切换 provider。
@@ -47,6 +50,17 @@ api-key = "GATEWAY_API_KEY"
 第二份响应直接返回，不递归重试。HTTP 200/SSE 内失败、流中断、429/5xx、compaction
 密文、`previous_response_id` 等不在此修复范围。压缩请求、超过 32 MiB 的请求、超过
 1 MiB 的错误响应也仅透传。实际额外请求是这一层的一次重试；CLI 自己可能另有重试。
+
+`codex.max_output_tokens` 默认 0（关闭），负数无效。开启后只为 Responses 的数组
+`input` 补入缺失、null 或 0 的输出预算；保留已有非零值，不改模型、reasoning、上下文
+大小或服务档位。catalog、compaction、ChatCompletions、压缩或超过 32 MiB 的请求仍
+保持原样。这是每次 API 请求的输出预算，不是上游 TPM、日额度或整条会话的限制。
+
+代理保留 `Retry-After`、`X-RateLimit-*`、`X-Should-Retry` 等上游头，重试仍由原生
+Codex 负责。HTTP 错误只记录供应商、目标主机、状态码及白名单限流元数据；不读取
+或记录错误正文、请求正文、key。取消请求不会作为普通网络故障报警。不会自动切换
+到另一供应商，也不会在代理里重新执行整轮任务。参见
+[Seed 限流与 Maso 对照](incidents/2026-10-27-seed-rate-limits.md)。
 
 建议配置该 provider 的显式 `models` 列表；模型配置服务和推理接口可能采用不同的
 URL 与鉴权，不能把 `/models` 返回 404 当成推理 key 失效。新增 provider 不会自动

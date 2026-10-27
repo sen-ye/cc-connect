@@ -44,12 +44,16 @@ func TestNativeCodex_SeedReplayFallbackSurvivesResume(t *testing.T) {
 			t.Error("native request lost its Seed authentication or affinity")
 		}
 		var body struct {
-			Input          []json.RawMessage `json:"input"`
-			PromptCacheKey string            `json:"prompt_cache_key"`
+			Input           []json.RawMessage `json:"input"`
+			PromptCacheKey  string            `json:"prompt_cache_key"`
+			MaxOutputTokens int               `json:"max_output_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 			return
+		}
+		if body.MaxOutputTokens != 64000 {
+			t.Errorf("native request is missing configured output budget: %d", body.MaxOutputTokens)
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -87,7 +91,7 @@ func TestNativeCodex_SeedReplayFallbackSurvivesResume(t *testing.T) {
 		configEnv: []string{"OPENAI_API_KEY=", "http_proxy=", "https_proxy=", "HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=", "all_proxy="}}
 	a.SetProviders([]core.ProviderConfig{{Name: "Seed", BaseURL: server.URL + "/openai?api-version=2024-03-01-preview",
 		CodexHTTPHeaders:     map[string]string{"api-key": "seed-test-only", "x-session-id": "native-affinity"},
-		CodexModelCatalogURL: server.URL + "/models", CodexReasoningReplayFallback: true}})
+		CodexModelCatalogURL: server.URL + "/models", CodexReasoningReplayFallback: true, CodexMaxOutputTokens: 64000}})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	start := func(id string) core.AgentSession {

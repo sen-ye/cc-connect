@@ -463,6 +463,7 @@ type ProviderConfig struct {
 	CodexEnvHTTPHeaders  map[string]string // HTTP header name -> environment variable
 	CodexProxyURL        string            // optional fixed HTTP(S) network proxy for this provider
 	CodexModelCatalogURL string            // optional full URL of the Codex-native model catalog
+	CodexMaxOutputTokens int               // optional Responses output limit when a request omits it; 0 disables injection
 	// Opt in to one lossy retry when a Responses endpoint rejects encrypted reasoning.
 	CodexReasoningReplayFallback bool
 }

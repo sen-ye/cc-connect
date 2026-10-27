@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ base_url = "https://router.example/responses/openai?api-version=2024-03-01-previ
 [providers.codex]
 wire_api = "responses"
 reasoning_replay_fallback = true
+max_output_tokens = 64000
 [providers.codex.env_http_headers]
 api-key = "SEED_PROXY_TEST_KEY"
 
@@ -31,7 +33,7 @@ provider_refs = ["Seed"]
 	}
 	cfg.ResolveProviderRefs()
 	provider := cfg.Projects[0].Agent.Providers[0]
-	if provider.Codex == nil || !provider.Codex.ReasoningReplayFallback || provider.APIKey != "" {
+	if provider.Codex == nil || !provider.Codex.ReasoningReplayFallback || provider.Codex.MaxOutputTokens != 64000 || provider.APIKey != "" {
 		t.Fatal("provider reference lost its opt-in or materialized a credential")
 	}
 	var encoded strings.Builder
@@ -54,15 +56,35 @@ provider_refs = ["Seed"]
 	if _, err := toml.Decode(`wire_api = "responses"`, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	if legacy.ReasoningReplayFallback {
+	if legacy.ReasoningReplayFallback || legacy.MaxOutputTokens != 0 {
 		t.Fatal("legacy provider unexpectedly enabled lossy reasoning recovery")
 	}
 	encoded.Reset()
 	if err := toml.NewEncoder(&encoded).Encode(legacy); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(encoded.String(), "reasoning_replay_fallback") {
+	if strings.Contains(encoded.String(), "reasoning_replay_fallback") || strings.Contains(encoded.String(), "max_output_tokens") {
 		t.Fatal("disabled default should remain omitted")
+	}
+}
+
+func TestCodexMaxOutputTokens_ConfigJSONRoundTrip(t *testing.T) {
+	for _, limit := range []int{0, 64000, -1} {
+		settings := CodexProviderConfig{MaxOutputTokens: limit}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "max_output_tokens") != (limit != 0) {
+			t.Fatalf("JSON output injection field for %d: %s", limit, encoded)
+		}
+		var decoded CodexProviderConfig
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.MaxOutputTokens != limit {
+			t.Fatalf("JSON lost max_output_tokens=%d", limit)
+		}
 	}
 }
 
@@ -72,6 +94,7 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 		ProxyURL: "http://proxy.example:8118", ModelCatalogURL: "https://router.example/models?api-version=v1",
 		HTTPHeaders: map[string]string{"X-Test": "original"}, EnvHTTPHeaders: map[string]string{"api-key": "PROVIDER_ENV_KEY"},
 		ReasoningReplayFallback: true,
+		MaxOutputTokens:         64000,
 	}
 	source := AgentConfig{Type: "codex", Providers: []ProviderConfig{{Name: "Seed", Codex: settings}}}
 	cloned := cloneAgentConfig(source)
@@ -82,7 +105,8 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 	got.HTTPHeaders["X-Test"] = "changed"
 	got.EnvHTTPHeaders["api-key"] = "OTHER_ENV_KEY"
 	got.ReasoningReplayFallback = false
-	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback {
+	got.MaxOutputTokens = 32000
+	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback || settings.MaxOutputTokens != 64000 {
 		t.Fatal("cloned project mutated the source provider configuration")
 	}
 }

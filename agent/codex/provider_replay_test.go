@@ -230,7 +230,7 @@ func TestProviderReplay_OnlyKnownUnstartedResponsesAreRetried(t *testing.T) {
 		{name: "disabled", status: 400, wantCalls: 1, disabled: true},
 		{name: "already_started_sse", status: 200, responseBody: "event: response.failed\ndata: " + replayRefusal + "\n\n", wantCalls: 1},
 		{name: "unrelated_400", status: 400, responseBody: `{"error":{"code":"invalid_request","message":"other failure"}}`, wantCalls: 1},
-		{name: "conflicting_identities_not_supported", status: 400, responseBody: `{"error":{"message":"Conflicting authenticated continuation identities"}}`, wantCalls: 1},
+		{name: "conflicting_identities_with_ciphertext", status: 400, responseBody: `{"error":{"message":"Conflicting authenticated continuation identities"}}`, wantCalls: 2},
 		{name: "rate_limit", status: 429, wantCalls: 1},
 		{name: "server_failure", status: 503, wantCalls: 1},
 		{name: "get", method: http.MethodGet, status: 400, wantCalls: 1},

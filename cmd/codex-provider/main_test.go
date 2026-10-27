@@ -48,6 +48,7 @@ models = [{model="gpt-6-astra"}, {model="es1-grape-g61s"}]
 [provider.codex]
 wire_api = "responses"
 reasoning_replay_fallback = true
+max_output_tokens = 64000
 [provider.codex.env_http_headers]
 api-key = "SEED_TEST_KEY"
 `
@@ -59,7 +60,7 @@ api-key = "SEED_TEST_KEY"
 		t.Fatal(err)
 	}
 	p := nativeProvider(cfg.Provider)
-	if !p.CodexReasoningReplayFallback || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
+	if !p.CodexReasoningReplayFallback || p.CodexMaxOutputTokens != 64000 || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
 		t.Fatal("provider recovery/auth config lost")
 	}
 	before, _ := os.ReadFile(file)
@@ -72,6 +73,22 @@ api-key = "SEED_TEST_KEY"
 	var output bytes.Buffer
 	if code := run(context.Background(), []string{"--config", file}, strings.NewReader(""), &output, &output); code != 2 || strings.Contains(output.String(), "super-secret") {
 		t.Fatalf("invalid config leaked a credential or returned success: code=%d", code)
+	}
+}
+
+func TestNativeProvider_MaxOutputTokensDefaultAndIsolation(t *testing.T) {
+	configured := config.ProviderConfig{Name: "configured", Codex: &config.CodexProviderConfig{MaxOutputTokens: 64000}}
+	if got := nativeProvider(configured).CodexMaxOutputTokens; got != 64000 {
+		t.Fatalf("native output limit = %d, want 64000", got)
+	}
+	for _, provider := range []config.ProviderConfig{{Name: "legacy"}, {Name: "explicit-zero", Codex: &config.CodexProviderConfig{}}} {
+		if got := nativeProvider(provider).CodexMaxOutputTokens; got != 0 {
+			t.Fatalf("unconfigured provider %s acquired output limit %d", provider.Name, got)
+		}
+	}
+	configured.Codex.MaxOutputTokens = -1
+	if got := nativeProvider(configured).CodexMaxOutputTokens; got != -1 {
+		t.Fatal("invalid value was hidden from runtime validation")
 	}
 }
 

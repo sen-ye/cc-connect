@@ -105,6 +105,7 @@ func nativeProvider(p config.ProviderConfig) core.ProviderConfig {
 		out.CodexEnvKey, out.CodexWireAPI = c.EnvKey, c.WireAPI
 		out.CodexHTTPHeaders, out.CodexEnvHTTPHeaders = c.HTTPHeaders, c.EnvHTTPHeaders
 		out.CodexReasoningReplayFallback = c.ReasoningReplayFallback
+		out.CodexMaxOutputTokens = c.MaxOutputTokens
 	}
 	return out
 }
