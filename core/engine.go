@@ -5227,6 +5227,14 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			case EventModelSwitch:
 				e.relayModelSwitch(p, replyCtx, sessionKey, event.ModelSwitch)
 
+			case EventTurnSuperseded:
+				textParts = nil
+
+			case EventRetry:
+				if notice := e.agentRetryNotice(event.Retry); notice != "" {
+					e.send(p, replyCtx, notice)
+				}
+
 			case EventResult:
 				if !event.Done {
 					continue
@@ -5671,7 +5679,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if event.Retry == nil {
 				break
 			}
-			notice := e.i18n.Tf(MsgAgentRetrying, e.agentDisplayName(), event.Retry.Attempt)
+			if idleTimer != nil && event.Retry.DelaySeconds > 0 {
+				// A declared backoff is intentional inactivity. The independent
+				// maximum-turn deadline and /stop still bound/cancel the turn.
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(time.Duration(event.Retry.DelaySeconds)*time.Second + e.eventIdleTimeout)
+			}
+			notice := e.agentRetryNotice(event.Retry)
 			if streamCard != nil && !streamCard.Failed() {
 				if err := streamCard.Update(e.ctx, buildCardContent(notice, cardToolCalls, cardAnswerText.String())); err == nil {
 					break

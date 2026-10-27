@@ -22,6 +22,8 @@ type providerProxy struct {
 	server    *http.Server
 	transport *http.Transport
 	once      sync.Once
+	retryMu   sync.Mutex
+	retryHint providerRetryHint
 }
 
 const providerCatalogPath = "/_cc_connect_models"
@@ -31,6 +33,7 @@ type providerProxyOptions struct {
 	ReasoningReplayFallback bool
 	MaxOutputTokens         int
 	ProviderName            string
+	observeResponse         func(*http.Response)
 }
 
 func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*providerProxy, string, error) {
@@ -77,8 +80,10 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 	if upstreamProxy != nil {
 		transport.Proxy = http.ProxyURL(upstreamProxy)
 	}
+	p := &providerProxy{transport: transport}
+	options.observeResponse = p.rememberRetryResponse
 	handler := providerProxyHandler(target, catalog, transport, options)
-	p := &providerProxy{transport: transport, server: &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}}
+	p.server = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			slog.Error("codex: provider proxy stopped", "error", err)
@@ -100,6 +105,9 @@ func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, o
 	}
 	reverse.ModifyResponse = func(response *http.Response) error {
 		logProviderHTTPFailure(response, options.ProviderName, target.Hostname())
+		if options.observeResponse != nil {
+			options.observeResponse(response)
+		}
 		return nil
 	}
 	reverse.FlushInterval = -1

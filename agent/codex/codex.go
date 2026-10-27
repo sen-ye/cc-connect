@@ -51,6 +51,7 @@ type Agent struct {
 	mu              sync.RWMutex
 	reasoningMu     sync.Mutex
 	reasoningCache  reasoningMetadataCache
+	autoRetry       autoRetryPolicy
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -69,6 +70,13 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 	appServerURL = normalizeAppServerURL(appServerURL)
+	autoRetry, err := parseAutoRetryPolicy(opts)
+	if err != nil {
+		return nil, err
+	}
+	if autoRetry.maxAttempts > 0 && backend != "app_server" {
+		return nil, fmt.Errorf("codex: automatic continuation requires backend=app_server")
+	}
 
 	cmd, cliExtraArgs := core.ParseCmdOpts(opts, "")
 
@@ -97,6 +105,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
+		autoRetry:       autoRetry,
 		workDir:         workDir,
 		model:           model,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
@@ -188,6 +197,7 @@ func (a *Agent) WorkspaceAgentOptionSnapshot() map[string]any {
 		"reasoning_effort": a.reasoningEffort, "system_prompt": a.systemPrompt,
 		"append_system_prompt": a.appendPrompt, "env": env,
 	}
+	a.autoRetry.addOptions(opts)
 	if a.cmd != "" {
 		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
 	}
@@ -524,6 +534,7 @@ func (a *Agent) startSession(ctx context.Context, sessionID string, providerName
 	cliBin := a.cmd
 	cliExtraArgs := append([]string(nil), a.cliExtraArgs...)
 	workDir := a.workDir
+	autoRetry := a.autoRetry
 	// Order matters for MergeEnv override semantics (later wins):
 	//   1. configEnv — static env from [projects.agent.options.env]
 	//   2. providerEnv — per-provider keys (OPENAI_API_KEY etc.)
@@ -554,6 +565,9 @@ func (a *Agent) startSession(ctx context.Context, sessionID string, providerName
 		if cfg.proxy != nil {
 			context.AfterFunc(session.ctx, cfg.proxy.Close)
 		}
+		session.stateMu.Lock()
+		session.autoRetry.policy = autoRetry
+		session.stateMu.Unlock()
 		return session, nil
 	}
 	if codexHome != "" {
@@ -622,6 +636,7 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 		"mode":    a.mode,
 		"backend": a.backend,
 	}
+	a.autoRetry.addOptions(opts)
 	if a.cmd != "" {
 		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
 	}

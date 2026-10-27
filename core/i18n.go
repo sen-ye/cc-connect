@@ -219,6 +219,7 @@ const (
 	MsgToolAllowFailed           MsgKey = "tool_allow_failed"
 	MsgToolAllowedNew            MsgKey = "tool_allowed_new"
 	MsgAgentRetrying             MsgKey = "agent_retrying"
+	MsgAgentRetryScheduled       MsgKey = "agent_retry_scheduled"
 	MsgAgentFailureProvider      MsgKey = "agent_failure_provider"
 	MsgAgentFailureConnection    MsgKey = "agent_failure_connection"
 	MsgAgentFailureStalled       MsgKey = "agent_failure_stalled"
@@ -907,6 +908,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 工具 `%s` 已預授權。將在下次會話生效。",
 		LangJapanese:           "✅ ツール `%s` を事前許可しました。次のセッションから有効になります。",
 		LangSpanish:            "✅ Herramienta `%s` pre-autorizada. Se aplicará en la próxima sesión.",
+	},
+	MsgAgentRetryScheduled: {
+		LangEnglish:            "⏳ %s hit a temporary error. Recovery %d/%d starts in %d seconds in the same conversation and provider. Use /stop to cancel.",
+		LangChinese:            "⏳ %s 遇到临时错误，%d/%d 次自动恢复将在 %d 秒后开始，沿用同一会话和供应商。可用 /stop 取消。",
+		LangTraditionalChinese: "⏳ %s 遇到暫時錯誤，%d/%d 次自動復原將於 %d 秒後開始，沿用同一對話及供應商。可用 /stop 取消。",
+		LangJapanese:           "⏳ %s で一時的なエラーが発生しました。復旧 %d/%d を %d 秒後に同じ会話とプロバイダーで開始します。/stop で中止できます。",
+		LangSpanish:            "⏳ %s encontró un error temporal. La recuperación %d/%d comenzará en %d segundos en la misma conversación y proveedor. Usa /stop para cancelarla.",
 	},
 	MsgAgentRetrying: {
 		LangEnglish:            "⏳ %s is recovering the connection (attempt %d). This turn is still running.",

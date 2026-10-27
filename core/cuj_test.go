@@ -808,6 +808,62 @@ type startSessionError struct{ msg string }
 func (e *startSessionError) Error() string { return e.msg }
 
 func TestCUJ_G1_LLMFailureSurfacesErrorToUser(t *testing.T) {
+	t.Run("ScheduledRecoveryKeepsQueueAndHistory", func(t *testing.T) {
+		env := newCUJEnv(t)
+		t.Cleanup(func() { _ = env.engine.Stop() })
+		env.agent.setNextSessionEvents([]Event{
+			{Type: EventText, Content: "FAILED_DRAFT"},
+			{Type: EventTurnSuperseded, Synthetic: true},
+			{Type: EventRetry, Retry: &AgentRetry{Attempt: 1, MaxAttempts: 5, DelaySeconds: 10}},
+		}, 0)
+		key := env.userSends("auto-retry", "original task")
+		env.waitFor("scheduled notice", time.Second, func() bool { return env.sentContains("Recovery 1/5 starts in 10 seconds") })
+		// Commands remain responsive while recovery keeps the task active.
+		env.userSends("auto-retry", "/status")
+		env.userSends("auto-retry", "queued follow-up")
+		env.waitFor("queue acknowledgement", time.Second, func() bool { return env.sentContains(env.engine.i18n.T(MsgMessageQueued)) })
+		env.agent.mu.Lock()
+		current := env.agent.sessions[0]
+		env.agent.mu.Unlock()
+		current.mu.Lock()
+		current.reply = "queued answer"
+		current.mu.Unlock()
+		current.events <- Event{Type: EventResult, Content: "recovered answer", Done: true}
+		env.waitFor("recovered and queued replies", 2*time.Second, func() bool {
+			return env.sentContains("recovered answer") && env.sentContains("queued answer") && !env.activeSession(key).Busy()
+		})
+		if !env.sentContains("same conversation and provider") || !env.sentContains("/stop") {
+			t.Fatalf("missing recovery controls: %v", env.plat.getSent())
+		}
+		for _, text := range env.plat.getSent() {
+			if strings.Contains(text, "recovered answer") && strings.Contains(text, "FAILED_DRAFT") {
+				t.Fatal("failed draft was concatenated into the final answer")
+			}
+		}
+		if len(current.getSentPrompts()) != 2 {
+			t.Fatal("recovery notice or status command resubmitted the original task")
+		}
+		originals := 0
+		for _, entry := range env.activeSession(key).GetHistory(0) {
+			if entry.Role == "user" && entry.Content == "original task" {
+				originals++
+			}
+		}
+		if originals != 1 {
+			t.Fatalf("original task appeared %d times in history", originals)
+		}
+	})
+	t.Run("StopDuringScheduledRecoveryRemainsUsable", func(t *testing.T) {
+		env := newCUJEnv(t)
+		t.Cleanup(func() { _ = env.engine.Stop() })
+		env.agent.setNextSessionEvents([]Event{{Type: EventRetry, Retry: &AgentRetry{Attempt: 1, MaxAttempts: 5, DelaySeconds: 10}}}, 0)
+		key := env.userSends("stop-retry", "start task")
+		env.waitFor("recovery notice", time.Second, func() bool { return env.sentContains("Recovery 1/5") })
+		env.userSends("stop-retry", "/stop")
+		env.waitFor("stop acknowledged", time.Second, func() bool { return env.sentContains("stopped") && !env.activeSession(key).Busy() })
+		env.userSends("stop-retry", "new task after stop")
+		env.waitFor("new task reply", 2*time.Second, func() bool { return env.sentContains("ok") && !env.activeSession(key).Busy() })
+	})
 	t.Run("RecoveryNoticeFailureThenContinue", func(t *testing.T) {
 		env := newCUJEnv(t)
 		t.Cleanup(func() { _ = env.engine.Stop() })

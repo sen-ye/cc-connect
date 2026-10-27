@@ -68,11 +68,9 @@ type turnStartResponse struct {
 type turnNotification struct {
 	ThreadID string `json:"threadId"`
 	Turn     struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+		ID     string            `json:"id"`
+		Status string            `json:"status"`
+		Error  *codexTurnFailure `json:"error"`
 	} `json:"turn"`
 }
 
@@ -83,7 +81,11 @@ type itemNotification struct {
 }
 
 type errorNotification struct {
-	Message string `json:"message"`
+	Message   string            `json:"message"`
+	Error     *codexTurnFailure `json:"error"`
+	WillRetry bool              `json:"willRetry"`
+	ThreadID  string            `json:"threadId"`
+	TurnID    string            `json:"turnId"`
 }
 
 type appServerRateLimitsResponse struct {
@@ -189,6 +191,7 @@ type appServerSession struct {
 	currentTurn  string
 	turnRevision uint64 // terminal notifications can precede the turn/start response
 	preambleSent bool
+	autoRetry    autoRetryState // protected by stateMu
 
 	runtimeMu         sync.RWMutex
 	serviceTierMu     sync.Mutex
@@ -497,6 +500,10 @@ func (s *appServerSession) storeContextUsage(usage *core.ContextUsage) {
 }
 
 func (s *appServerSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	return s.sendTurn(prompt, messageID, images, files, 0)
+}
+
+func (s *appServerSession) sendTurn(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment, recoveryGeneration uint64) error {
 	if !s.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
@@ -516,6 +523,15 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	}
 
 	s.stateMu.Lock()
+	if recoveryGeneration != 0 {
+		if s.autoRetry.generation != recoveryGeneration || !s.autoRetry.waiting || !s.alive.Load() {
+			s.stateMu.Unlock()
+			return context.Canceled
+		}
+	} else {
+		s.autoRetry.invalidate()
+		s.autoRetry.attempts, s.autoRetry.waited = 0, 0
+	}
 	turnRevision := s.turnRevision
 	if !s.preambleSent {
 		prompt = prependCodexPromptPreamble(prompt, s.promptPreamble)
@@ -564,7 +580,7 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	}
 
 	s.stateMu.Lock()
-	if s.turnRevision != turnRevision {
+	if s.turnRevision != turnRevision || (recoveryGeneration != 0 && s.autoRetry.generation != recoveryGeneration) {
 		// A notification already finished this turn while its response waited.
 		s.stateMu.Unlock()
 		return nil
@@ -574,6 +590,7 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		return fmt.Errorf("codex app-server connection closed during turn/start: %w", io.EOF)
 	}
 	s.currentTurn = resp.Turn.ID
+	s.autoRetry.waiting = false
 	s.pendingMsgs = s.pendingMsgs[:0]
 	s.stateMu.Unlock()
 
@@ -1058,8 +1075,11 @@ func (s *appServerSession) Alive() bool {
 
 func (s *appServerSession) Close() error {
 	defer s.providerProxy.Close()
+	s.stateMu.Lock()
 	s.alive.Store(false)
+	s.autoRetry.invalidate()
 	s.cancel()
+	s.stateMu.Unlock()
 
 	s.procMu.Lock()
 	if s.stdin != nil {
@@ -1191,6 +1211,7 @@ func (s *appServerSession) waitLoop() {
 func (s *appServerSession) finishTransport(err error) {
 	s.stateMu.Lock()
 	s.alive.Store(false)
+	s.autoRetry.invalidate()
 	active := s.currentTurn != ""
 	if active {
 		s.currentTurn = ""
@@ -1240,7 +1261,12 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsThreadNotification(method, notif.ThreadID) {
 			s.stateMu.Lock()
+			if s.autoRetry.isRetired(notif.Turn.ID) {
+				s.stateMu.Unlock()
+				return
+			}
 			s.currentTurn = notif.Turn.ID
+			s.autoRetry.waiting = false
 			s.pendingMsgs = s.pendingMsgs[:0]
 			s.stateMu.Unlock()
 			s.storeContextUsage(nil)
@@ -1269,7 +1295,16 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 				if errMsg == "" {
 					errMsg = "turn failed (no details)"
 				}
-				s.failTurn(fmt.Errorf("%s", errMsg))
+				failure := notif.Turn.Error
+				if failure == nil {
+					failure = &codexTurnFailure{Message: errMsg}
+				} else if strings.TrimSpace(failure.Message) == "" {
+					failure = &codexTurnFailure{Message: errMsg, Info: failure.Info}
+				}
+				interrupted := strings.EqualFold(notif.Turn.Status, "interrupted") || strings.EqualFold(notif.Turn.Status, "cancelled") || strings.EqualFold(notif.Turn.Status, "canceled")
+				if interrupted || !s.scheduleAutoRetry(failure) {
+					s.failTurn(s.recoveryFailure(failure))
+				}
 			} else {
 				s.completeTurn()
 			}
@@ -1283,6 +1318,14 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 			} `json:"status"`
 		}
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" && s.acceptsThreadNotification(method, notif.ThreadID) {
+			s.stateMu.Lock()
+			// A modern CLI's authoritative turn/completed carries the failure.
+			// An idle hint can precede it and must not report a retry as success.
+			awaitTerminal := s.autoRetry.policy.maxAttempts > 0
+			s.stateMu.Unlock()
+			if awaitTerminal {
+				return
+			}
 			if s.hasPendingApprovals() {
 				slog.Debug("codex app-server: deferring idle completion while approvals pending")
 				return
@@ -1305,7 +1348,18 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 
 	case "error":
 		var notif errorNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil && strings.TrimSpace(notif.Message) != "" {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if !s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) || notif.WillRetry {
+				return
+			}
+			if notif.TurnID != "" && notif.Error != nil {
+				// Scoped errors are followed by turn/completed. Let that single
+				// terminal notification decide whether to continue automatically.
+				return
+			}
+			if strings.TrimSpace(notif.Message) == "" {
+				return
+			}
 			err := fmt.Errorf("%s", notif.Message)
 			if !s.failTurn(err) {
 				s.emitError(err) // retain connection errors outside an active turn
@@ -1334,7 +1388,11 @@ func (s *appServerSession) acceptsTurnNotification(method, threadID, turnID stri
 
 	s.stateMu.Lock()
 	currentTurn := s.currentTurn
+	retired := s.autoRetry.isRetired(turnID)
 	s.stateMu.Unlock()
+	if retired {
+		return false
+	}
 	if currentTurn == "" || turnID == currentTurn {
 		return true
 	}
@@ -1849,10 +1907,14 @@ func rpcIDToInt64(v any) (int64, bool) {
 
 func (s *appServerSession) completeTurn() {
 	s.stateMu.Lock()
-	if s.currentTurn == "" {
+	if s.currentTurn == "" || s.autoRetry.waiting {
 		s.stateMu.Unlock()
 		return
 	}
+	if s.autoRetry.policy.maxAttempts > 0 {
+		s.autoRetry.retire(s.currentTurn)
+	}
+	s.autoRetry.invalidate()
 	s.currentTurn = ""
 	s.turnRevision++
 	s.stateMu.Unlock()
@@ -1866,6 +1928,10 @@ func (s *appServerSession) failTurn(err error) bool {
 		s.stateMu.Unlock()
 		return false
 	}
+	if s.autoRetry.policy.maxAttempts > 0 {
+		s.autoRetry.retire(s.currentTurn)
+	}
+	s.autoRetry.invalidate()
 	s.currentTurn = ""
 	s.turnRevision++
 	s.pendingMsgs = s.pendingMsgs[:0]

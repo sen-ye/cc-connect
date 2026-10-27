@@ -1,0 +1,334 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/chenhg5/cc-connect/core"
+)
+
+type recoveryRPC struct {
+	ID     int64          `json:"id"`
+	Method string         `json:"method"`
+	Params map[string]any `json:"params"`
+	sentAt time.Time
+}
+
+type recoveryWriter struct {
+	requests chan recoveryRPC
+	done     chan struct{}
+	once     sync.Once
+}
+
+func (w *recoveryWriter) Write(raw []byte) (int, error) {
+	var request recoveryRPC
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return 0, err
+	}
+	request.sentAt = time.Now()
+	select {
+	case w.requests <- request:
+		return len(raw), nil
+	case <-w.done:
+		return 0, io.EOF
+	}
+}
+func (w *recoveryWriter) Close() error { w.once.Do(func() { close(w.done) }); return nil }
+
+func newRecoveryFixture(t *testing.T) (*appServerSession, *recoveryWriter) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &recoveryWriter{requests: make(chan recoveryRPC, 16), done: make(chan struct{})}
+	s := &appServerSession{ctx: ctx, cancel: cancel, stdin: w, events: make(chan core.Event, 64),
+		pending: make(map[int64]chan rpcResponseEnvelope), model: "gpt-6-astra", effort: "xhigh", modelProvider: "Seed", mode: "suggest",
+		autoRetry: autoRetryState{policy: autoRetryPolicy{maxAttempts: 2, maxWait: time.Second, baseDelay: 15 * time.Millisecond, maxDelay: 100 * time.Millisecond}}}
+	s.threadID.Store("saved-seed-thread")
+	s.alive.Store(true)
+	t.Cleanup(func() { _ = s.Close() })
+	return s, w
+}
+
+func takeRecoveryRPC(t *testing.T, w *recoveryWriter) recoveryRPC {
+	t.Helper()
+	select {
+	case r := <-w.requests:
+		return r
+	case <-time.After(time.Second):
+		t.Fatal("no recovery RPC")
+		return recoveryRPC{}
+	}
+}
+
+func recoveryNotification(s *appServerSession, method, id, status string, err error) {
+	turn := map[string]any{"id": id, "status": status}
+	if err != nil {
+		turn["error"] = map[string]any{"message": err.Error(), "codexErrorInfo": map[string]any{"responseTooManyFailedAttempts": map[string]int{"httpStatusCode": 429}}}
+	}
+	data, _ := json.Marshal(map[string]any{"threadId": s.CurrentSessionID(), "turn": turn})
+	s.handleNotification(method, data)
+}
+
+func acceptRecoveryRPC(s *appServerSession, r recoveryRPC, id string) {
+	recoveryNotification(s, "turn/started", id, "inProgress", nil)
+	raw, _ := json.Marshal(map[string]any{"turn": map[string]string{"id": id}})
+	s.handleResponse(rpcResponseEnvelope{ID: r.ID, Result: raw})
+}
+
+func startRecoveryUserTurn(t *testing.T, s *appServerSession, w *recoveryWriter, prompt, id string) recoveryRPC {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- s.Send(prompt, "user-message", nil, nil) }()
+	r := takeRecoveryRPC(t, w)
+	acceptRecoveryRPC(s, r, id)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func takeRecoveryEvent(t *testing.T, s *appServerSession, want core.EventType) core.Event {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case e := <-s.Events():
+			if e.Type == want {
+				return e
+			}
+			if e.Type == core.EventError || e.Type == core.EventResult {
+				t.Fatalf("premature terminal event: %s %v", e.Type, e.Error)
+			}
+		case <-deadline.C:
+			t.Fatalf("missing %s event", want)
+		}
+	}
+}
+
+func assertNoRecoveryRPC(t *testing.T, w *recoveryWriter, duration time.Duration) {
+	t.Helper()
+	select {
+	case r := <-w.requests:
+		t.Fatalf("unexpected extra RPC: %s", r.Method)
+	case <-time.After(duration):
+	}
+}
+
+func TestAutoRetry_ContinuesSameThreadOnceAfterNativeRetriesEnd(t *testing.T) {
+	s, w := newRecoveryFixture(t)
+	startRecoveryUserTurn(t, s, w, "ORIGINAL_TASK_ONCE", "original-turn")
+	s.handleNotification("error", []byte(`{"threadId":"saved-seed-thread","turnId":"original-turn","willRetry":true,"error":{"message":"429","codexErrorInfo":"rateLimitExceeded"}}`))
+	assertNoRecoveryRPC(t, w, 20*time.Millisecond)
+	s.handleNotification("thread/status/changed", []byte(`{"threadId":"saved-seed-thread","status":{"type":"idle"}}`))
+	s.handleNotification("error", []byte(`{"threadId":"saved-seed-thread","turnId":"original-turn","willRetry":false,"error":{"message":"429","codexErrorInfo":"rateLimitExceeded"}}`))
+	recoveryNotification(s, "turn/completed", "original-turn", "failed", errors.New("exceeded retry limit, last status: 429 Too Many Requests"))
+	e := takeRecoveryEvent(t, s, core.EventRetry)
+	if e.Retry.Attempt != 1 || e.Retry.MaxAttempts != 2 || e.Retry.DelaySeconds < 1 {
+		t.Fatalf("missing bounded recovery progress: %+v", e.Retry)
+	}
+	// Duplicated terminal/start/idle notifications from the failed turn must
+	// neither enqueue another retry nor finalize the user-visible turn.
+	recoveryNotification(s, "turn/completed", "original-turn", "failed", errors.New("429"))
+	recoveryNotification(s, "turn/started", "original-turn", "inProgress", nil)
+	s.handleNotification("thread/status/changed", []byte(`{"threadId":"saved-seed-thread","status":{"type":"idle"}}`))
+	r := takeRecoveryRPC(t, w)
+	if r.Method != "turn/start" || r.Params["threadId"] != "saved-seed-thread" || r.Params["model"] != "gpt-6-astra" || r.Params["effort"] != "xhigh" {
+		t.Fatalf("recovery changed thread or settings: %#v", r.Params)
+	}
+	input := r.Params["input"].([]any)
+	if len(input) != 1 || input[0].(map[string]any)["text"] != autoRetryContinuation || strings.Contains(fmt.Sprint(input), "ORIGINAL_TASK_ONCE") {
+		t.Fatal("recovery duplicated the original user request or attachments")
+	}
+	acceptRecoveryRPC(s, r, "recovery-turn")
+	recoveryNotification(s, "turn/completed", "original-turn", "failed", errors.New("429"))
+	recoveryNotification(s, "turn/completed", "recovery-turn", "completed", nil)
+	result := takeRecoveryEvent(t, s, core.EventResult)
+	if !result.Done || result.SessionID != "saved-seed-thread" || s.modelProvider != "Seed" {
+		t.Fatal("recovery lost session/provider identity")
+	}
+	assertNoRecoveryRPC(t, w, 40*time.Millisecond)
+}
+
+func TestAutoRetry_StopsAtLimitAndResetsForNextUserMessage(t *testing.T) {
+	s, w := newRecoveryFixture(t)
+	startRecoveryUserTurn(t, s, w, "task", "t0")
+	for i := 0; i < 2; i++ {
+		recoveryNotification(s, "turn/completed", fmt.Sprint("t", i), "failed", errors.New("last status: 429"))
+		if got := takeRecoveryEvent(t, s, core.EventRetry); got.Retry.Attempt != i+1 {
+			t.Fatal("attempt counter restarted inside recovery")
+		}
+		acceptRecoveryRPC(s, takeRecoveryRPC(t, w), fmt.Sprint("t", i+1))
+	}
+	recoveryNotification(s, "turn/completed", "t2", "failed", errors.New("last status: 429"))
+	final := takeRecoveryEvent(t, s, core.EventError)
+	var failure *core.AgentFailure
+	if !errors.As(final.Error, &failure) || failure.RetryCount != 2 || failure.Kind != core.FailureRateLimit {
+		t.Fatalf("lost exhaustion details: %v", final.Error)
+	}
+	assertNoRecoveryRPC(t, w, 40*time.Millisecond)
+	startRecoveryUserTurn(t, s, w, "new user task", "t3")
+	recoveryNotification(s, "turn/completed", "t3", "failed", errors.New("last status: 429"))
+	if got := takeRecoveryEvent(t, s, core.EventRetry); got.Retry.Attempt != 1 {
+		t.Fatal("new user task inherited exhausted retry budget")
+	}
+}
+
+func TestAutoRetry_LateRPCFailureDoesNotCancelNextAttempt(t *testing.T) {
+	s, w := newRecoveryFixture(t)
+	startRecoveryUserTurn(t, s, w, "task", "t0")
+	recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+	takeRecoveryEvent(t, s, core.EventRetry)
+	first := takeRecoveryRPC(t, w)
+	// The turn's failed notification may precede the turn/start RPC response.
+	recoveryNotification(s, "turn/started", "t1", "inProgress", nil)
+	recoveryNotification(s, "turn/completed", "t1", "failed", errors.New("last status: 429"))
+	if e := takeRecoveryEvent(t, s, core.EventRetry); e.Retry.Attempt != 2 {
+		t.Fatal("second recovery not scheduled")
+	}
+	s.handleResponse(rpcResponseEnvelope{ID: first.ID, Error: &rpcError{Message: "late response for the previous failed turn"}})
+	second := takeRecoveryRPC(t, w)
+	acceptRecoveryRPC(s, second, "t2")
+	recoveryNotification(s, "turn/completed", "t2", "completed", nil)
+	takeRecoveryEvent(t, s, core.EventResult)
+}
+
+func TestAutoRetry_CumulativeWaitBudgetAndAmbiguousStartFailure(t *testing.T) {
+	t.Run("wait_budget", func(t *testing.T) {
+		s, w := newRecoveryFixture(t)
+		s.autoRetry.policy.maxAttempts = 10
+		s.autoRetry.policy.maxWait = 25 * time.Millisecond
+		startRecoveryUserTurn(t, s, w, "task", "t0")
+		recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+		takeRecoveryEvent(t, s, core.EventRetry)
+		acceptRecoveryRPC(s, takeRecoveryRPC(t, w), "t1")
+		recoveryNotification(s, "turn/completed", "t1", "failed", errors.New("last status: 429"))
+		event := takeRecoveryEvent(t, s, core.EventError)
+		var failure *core.AgentFailure
+		if !errors.As(event.Error, &failure) || failure.RetryCount != 1 {
+			t.Fatal("cumulative wait budget did not stop recovery")
+		}
+		assertNoRecoveryRPC(t, w, 40*time.Millisecond)
+	})
+	t.Run("ambiguous_start", func(t *testing.T) {
+		s, w := newRecoveryFixture(t)
+		startRecoveryUserTurn(t, s, w, "task", "t0")
+		recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+		takeRecoveryEvent(t, s, core.EventRetry)
+		rpc := takeRecoveryRPC(t, w)
+		s.handleResponse(rpcResponseEnvelope{ID: rpc.ID, Error: &rpcError{Message: "unknown start outcome"}})
+		takeRecoveryEvent(t, s, core.EventError)
+		assertNoRecoveryRPC(t, w, 40*time.Millisecond)
+	})
+}
+
+func TestAutoRetry_StopCancelsBackoffAndNewInputSupersedesIt(t *testing.T) {
+	for _, stop := range []bool{true, false} {
+		t.Run(fmt.Sprint("stop=", stop), func(t *testing.T) {
+			s, w := newRecoveryFixture(t)
+			s.autoRetry.policy.baseDelay = 150 * time.Millisecond
+			startRecoveryUserTurn(t, s, w, "task", "t0")
+			recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+			takeRecoveryEvent(t, s, core.EventRetry)
+			if stop {
+				if err := s.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				r := startRecoveryUserTurn(t, s, w, "new supplement", "user-replaced-turn")
+				if !strings.Contains(fmt.Sprint(r.Params["input"]), "new supplement") {
+					t.Fatal("supplement was lost")
+				}
+				recoveryNotification(s, "turn/completed", "user-replaced-turn", "completed", nil)
+				takeRecoveryEvent(t, s, core.EventResult)
+			}
+			assertNoRecoveryRPC(t, w, 200*time.Millisecond)
+		})
+	}
+}
+
+func TestAutoRetry_InterruptedTurnNeverResumesEvenWithTransientError(t *testing.T) {
+	s, w := newRecoveryFixture(t)
+	startRecoveryUserTurn(t, s, w, "task", "t0")
+	recoveryNotification(s, "turn/completed", "t0", "interrupted", errors.New("last status: 429"))
+	takeRecoveryEvent(t, s, core.EventError)
+	assertNoRecoveryRPC(t, w, 40*time.Millisecond)
+}
+
+func TestAutoRetry_RespectsServerMinimumWaitAndHardLimits(t *testing.T) {
+	for _, tc := range []struct {
+		header, value string
+		wait          bool
+	}{
+		{"Retry-After", "0.08", true}, {"Retry-After", "100000", false},
+		{"X-RateLimit-Dimension", "daily_key_model", false}, {"X-Should-Retry", "false", false},
+	} {
+		t.Run(tc.header+tc.value, func(t *testing.T) {
+			s, w := newRecoveryFixture(t)
+			s.providerProxy = &providerProxy{transport: &http.Transport{}, server: &http.Server{}}
+			startRecoveryUserTurn(t, s, w, "task", "t0")
+			s.providerProxy.rememberRetryResponse(&http.Response{StatusCode: 429, Header: http.Header{http.CanonicalHeaderKey(tc.header): []string{tc.value}}})
+			until := s.providerProxy.retryHint.until
+			recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+			if tc.wait {
+				takeRecoveryEvent(t, s, core.EventRetry)
+				r := takeRecoveryRPC(t, w)
+				if r.sentAt.Before(until) {
+					t.Fatal("retried before server's minimum wait")
+				}
+				acceptRecoveryRPC(s, r, "t1")
+			} else {
+				takeRecoveryEvent(t, s, core.EventError)
+				assertNoRecoveryRPC(t, w, 30*time.Millisecond)
+			}
+		})
+	}
+}
+
+func TestAutoRetry_ClassifiesStructuredAndLegacyFailures(t *testing.T) {
+	for _, info := range []string{`"rateLimitExceeded"`, `"serverOverloaded"`, `{"responseTooManyFailedAttempts":{"httpStatusCode":429}}`, `{"responseStreamDisconnected":{"httpStatusCode":200}}`, `{"httpConnectionFailed":{"httpStatusCode":null}}`} {
+		if !retryableTurnFailure(&codexTurnFailure{Message: "temporary failure", Info: json.RawMessage(info)}) {
+			t.Errorf("did not retry %s", info)
+		}
+	}
+	for _, info := range []string{`"usageLimitExceeded"`, `"contextWindowExceeded"`, `"sessionBudgetExceeded"`, `"unauthorized"`, `{"responseTooManyFailedAttempts":{"httpStatusCode":401}}`, `{"responseTooManyFailedAttempts":{"httpStatusCode":400}}`} {
+		if retryableTurnFailure(&codexTurnFailure{Message: "last status: 429", Info: json.RawMessage(info)}) {
+			t.Errorf("retried permanent structured error %s", info)
+		}
+	}
+	for _, message := range []string{"exceeded retry limit, last status: 429 Too Many Requests", "stream disconnected before completion: stream closed before response.completed", "HTTP 503 Service Unavailable"} {
+		if !retryableTurnFailure(errors.New(message)) {
+			t.Errorf("ignored transient legacy error %q", message)
+		}
+	}
+	for _, message := range []string{"bad request (429 was quoted)", "permission denied", "insufficient_quota", "canceled", "unknown failure"} {
+		if retryableTurnFailure(errors.New(message)) {
+			t.Errorf("retried permanent/unknown error %q", message)
+		}
+	}
+}
+
+func TestAutoRetry_ConfigurationSurvivesWorkspaceCloning(t *testing.T) {
+	a, err := New(map[string]any{"cmd": "go", "backend": "app_server", "auto_retry_max_attempts": 5, "auto_retry_max_wait_seconds": 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opts := range []map[string]any{a.(*Agent).WorkspaceAgentOptions(), a.(*Agent).WorkspaceAgentOptionSnapshot()} {
+		policy, err := parseAutoRetryPolicy(opts)
+		if err != nil || policy.maxAttempts != 5 || policy.maxWait != 10*time.Minute {
+			t.Fatalf("workspace lost retry policy: %+v %v", policy, err)
+		}
+	}
+	for _, opts := range []map[string]any{{"auto_retry_max_attempts": -1}, {"auto_retry_max_attempts": 21}, {"auto_retry_max_wait_seconds": 0}, {"auto_retry_max_wait_seconds": 3601}, {"auto_retry_max_attempts": "secret-invalid"}} {
+		if _, err := parseAutoRetryPolicy(opts); err == nil || strings.Contains(err.Error(), "secret-invalid") {
+			t.Fatal("invalid policy accepted or value leaked")
+		}
+	}
+}

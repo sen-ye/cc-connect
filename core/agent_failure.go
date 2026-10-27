@@ -44,8 +44,20 @@ func (f *AgentFailure) Error() string {
 
 // AgentRetry is progress for an automatic recovery attempt, never a turn result.
 type AgentRetry struct {
-	Attempt   int
-	RequestID string
+	Attempt      int
+	RequestID    string
+	MaxAttempts  int
+	DelaySeconds int
+}
+
+func (e *Engine) agentRetryNotice(retry *AgentRetry) string {
+	if retry == nil {
+		return ""
+	}
+	if retry.MaxAttempts > 0 {
+		return e.i18n.Tf(MsgAgentRetryScheduled, e.agentDisplayName(), retry.Attempt, retry.MaxAttempts, retry.DelaySeconds)
+	}
+	return e.i18n.Tf(MsgAgentRetrying, e.agentDisplayName(), retry.Attempt)
 }
 
 func (e *Engine) agentDisplayName() string {
