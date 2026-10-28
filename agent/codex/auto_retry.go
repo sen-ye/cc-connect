@@ -24,7 +24,7 @@ type autoRetryPolicy struct {
 }
 
 func parseAutoRetryPolicy(opts map[string]any) (autoRetryPolicy, error) {
-	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 10 * time.Second, maxDelay: 2 * time.Minute, jitter: true}
+	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 2 * time.Second, maxDelay: 2 * time.Minute, jitter: true}
 	for _, setting := range []struct {
 		name string
 		max  int

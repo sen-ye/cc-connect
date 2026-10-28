@@ -127,11 +127,11 @@ Maso 在 `packages/utils/src/maso_utils/providers.py` 中通过带 Bearer 认证
 ```toml
 [projects.agent.options]
 backend = "app_server"
-auto_retry_max_attempts = 5
-auto_retry_max_wait_seconds = 600
+auto_retry_max_attempts = 20
+auto_retry_max_wait_seconds = 3600
 ```
 
-默认关闭（`auto_retry_max_attempts = 0`），本机部署启用 5 次、累计等待 600 秒。
+默认关闭（`auto_retry_max_attempts = 0`），本机部署启用 20 次、累计等待 3600 秒。
 尝试次数允许 0–20，等待预算允许 1–3600 秒；此功能需要 app-server 后端。
 这些选项会继承到工作区中的 Codex agent，不改变任何会话的 provider、key 或代理。
 
@@ -141,7 +141,8 @@ auto_retry_max_wait_seconds = 600
 文件，也不主动重新执行旧工具。指令要求模型先核实状态，再处理结果不确定的操作；
 这不能保证模型永远不会自行选择重复某项操作。
 
-等待从 10 秒开始指数增长，指数部分上限 120 秒，并加入最多约 10% 的随机抖动。
+等待从 2 秒开始指数增长（2、4、8、16、32、64、120 秒），指数部分上限 120 秒，
+并加入最多约 10% 的随机抖动。
 若网关提供更长的有效 `Retry-After`，以服务端要求为下限；超出剩余等待预算则停止，
 不会提前请求。原生 API 重试与模型执行时间不计入这层的累计等待预算。
 认证失败、无效请求、上下文/会话预算耗尽、明确日额度耗尽和服务端要求不重试的
