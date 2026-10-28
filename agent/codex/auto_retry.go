@@ -24,12 +24,12 @@ type autoRetryPolicy struct {
 }
 
 func parseAutoRetryPolicy(opts map[string]any) (autoRetryPolicy, error) {
-	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 2 * time.Second, maxDelay: 2 * time.Minute, jitter: true}
+	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 2 * time.Second, maxDelay: 32 * time.Second, jitter: true}
 	for _, setting := range []struct {
 		name string
 		max  int
 	}{
-		{"auto_retry_max_attempts", 20}, {"auto_retry_max_wait_seconds", 3600},
+		{"auto_retry_max_attempts", 115}, {"auto_retry_max_wait_seconds", 3600},
 	} {
 		value, exists := opts[setting.name]
 		if !exists {
@@ -176,13 +176,18 @@ func (s *appServerSession) scheduleAutoRetry(err error) bool {
 		s.stateMu.Unlock()
 		return false
 	}
-	delay := r.policy.baseDelay
+	if hint > r.policy.maxDelay {
+		s.stateMu.Unlock()
+		return false // Do not exceed our cap or retry before the server allows it.
+	}
+	delay := min(r.policy.baseDelay, r.policy.maxDelay)
 	for i := 0; i < r.attempts && delay < r.policy.maxDelay; i++ {
 		delay = min(delay*2, r.policy.maxDelay)
 	}
 	delay = max(delay, hint)
 	if r.policy.jitter && delay > 0 {
-		delay += time.Duration(rand.Int64N(int64(delay/10) + 1))
+		jitterLimit := min(delay/10, r.policy.maxDelay-delay)
+		delay += time.Duration(rand.Int64N(int64(jitterLimit) + 1))
 	}
 	if delay > r.policy.maxWait-r.waited {
 		s.stateMu.Unlock()

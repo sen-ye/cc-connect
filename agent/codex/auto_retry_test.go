@@ -229,6 +229,106 @@ func TestAutoRetry_CumulativeWaitBudgetAndAmbiguousStartFailure(t *testing.T) {
 	})
 }
 
+func TestAutoRetry_BackoffNeverExceedsThirtyTwoSeconds(t *testing.T) {
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprint("jitter=", jitter), func(t *testing.T) {
+			s, _ := newRecoveryFixture(t)
+			policy, err := parseAutoRetryPolicy(map[string]any{"auto_retry_max_attempts": 20, "auto_retry_max_wait_seconds": 3600})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.jitter = jitter
+			s.autoRetry.policy = policy
+			s.currentTurn = "failed-turn"
+			for _, seconds := range []int{2, 4, 8, 16, 32, 32, 32, 32} {
+				delay := scheduledRecoveryDelay(t, s)
+				minimum := time.Duration(seconds) * time.Second
+				maximum := minimum
+				if jitter {
+					maximum = min(minimum+minimum/10, 32*time.Second)
+				}
+				if delay < minimum || delay > maximum {
+					t.Fatalf("delay = %s, want [%s, %s]", delay, minimum, maximum)
+				}
+			}
+		})
+	}
+}
+
+// Inspect the scheduled delay and cancel its timer, so even the full hour's
+// recovery budget is exercised without waiting or sending continuation RPCs.
+func scheduledRecoveryDelay(t *testing.T, s *appServerSession) time.Duration {
+	t.Helper()
+	s.stateMu.Lock()
+	before := s.autoRetry.waited
+	s.stateMu.Unlock()
+	if !s.scheduleAutoRetry(errors.New("last status: 429")) {
+		t.Fatal("recovery was not scheduled")
+	}
+	event := takeRecoveryEvent(t, s, core.EventRetry)
+	s.stateMu.Lock()
+	delay := s.autoRetry.waited - before
+	s.autoRetry.invalidate()
+	s.stateMu.Unlock()
+	if event.Retry.DelaySeconds != int((delay+time.Second-1)/time.Second) {
+		t.Fatalf("displayed delay does not match scheduled wait: %+v, %s", event.Retry, delay)
+	}
+	return delay
+}
+
+func TestAutoRetry_ThirtyTwoSecondCapAllows115AttemptsWithinHour(t *testing.T) {
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprint("jitter=", jitter), func(t *testing.T) {
+			s, _ := newRecoveryFixture(t)
+			policy, err := parseAutoRetryPolicy(map[string]any{"auto_retry_max_attempts": 115, "auto_retry_max_wait_seconds": 3600})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.jitter = jitter
+			s.autoRetry.policy = policy
+			s.currentTurn = "failed-turn"
+			var total time.Duration
+			for range 115 {
+				total += scheduledRecoveryDelay(t, s)
+			}
+			// 2 + 4 + 8 + 16 + 111*32 = 3582 seconds. Positive jitter adds
+			// at most 3 seconds before the cap; another attempt exceeds 3600.
+			if total < 3582*time.Second || total > 3585*time.Second {
+				t.Fatalf("unexpected total wait for 115 recoveries: %s", total)
+			}
+			if s.scheduleAutoRetry(errors.New("last status: 429")) {
+				t.Fatal("scheduled more than 115 recoveries")
+			}
+			s.stateMu.Lock()
+			s.autoRetry.policy.maxAttempts++
+			s.stateMu.Unlock()
+			if s.scheduleAutoRetry(errors.New("last status: 429")) {
+				t.Fatal("116th recovery exceeded the cumulative wait budget")
+			}
+		})
+	}
+}
+
+func TestAutoRetry_ServerMinimumAboveCapStopsWithoutShorteningWait(t *testing.T) {
+	s, _ := newRecoveryFixture(t)
+	policy, err := parseAutoRetryPolicy(map[string]any{"auto_retry_max_attempts": 20, "auto_retry_max_wait_seconds": 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.autoRetry.policy = policy
+	s.currentTurn = "failed-turn"
+	s.providerProxy = &providerProxy{transport: &http.Transport{}, server: &http.Server{}}
+	s.providerProxy.rememberRetryResponse(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"60"}}})
+	failure := errors.New("last status: 429")
+	if s.scheduleAutoRetry(failure) {
+		t.Fatal("scheduled recovery despite the server minimum exceeding 32 seconds")
+	}
+	var detail *core.AgentFailure
+	if !errors.As(s.recoveryFailure(failure), &detail) || detail.RetryAfter != "60 s" || detail.RetryCount != 0 {
+		t.Fatalf("server's minimum wait was lost: %+v", detail)
+	}
+}
+
 func TestAutoRetry_StopCancelsBackoffAndNewInputSupersedesIt(t *testing.T) {
 	for _, stop := range []bool{true, false} {
 		t.Run(fmt.Sprint("stop=", stop), func(t *testing.T) {
@@ -316,17 +416,17 @@ func TestAutoRetry_ClassifiesStructuredAndLegacyFailures(t *testing.T) {
 }
 
 func TestAutoRetry_ConfigurationSurvivesWorkspaceCloning(t *testing.T) {
-	a, err := New(map[string]any{"cmd": "go", "backend": "app_server", "auto_retry_max_attempts": 5, "auto_retry_max_wait_seconds": 600})
+	a, err := New(map[string]any{"cmd": "go", "backend": "app_server", "auto_retry_max_attempts": 115, "auto_retry_max_wait_seconds": 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, opts := range []map[string]any{a.(*Agent).WorkspaceAgentOptions(), a.(*Agent).WorkspaceAgentOptionSnapshot()} {
 		policy, err := parseAutoRetryPolicy(opts)
-		if err != nil || policy.maxAttempts != 5 || policy.maxWait != 10*time.Minute {
+		if err != nil || policy.maxAttempts != 115 || policy.maxWait != time.Hour {
 			t.Fatalf("workspace lost retry policy: %+v %v", policy, err)
 		}
 	}
-	for _, opts := range []map[string]any{{"auto_retry_max_attempts": -1}, {"auto_retry_max_attempts": 21}, {"auto_retry_max_wait_seconds": 0}, {"auto_retry_max_wait_seconds": 3601}, {"auto_retry_max_attempts": "secret-invalid"}} {
+	for _, opts := range []map[string]any{{"auto_retry_max_attempts": -1}, {"auto_retry_max_attempts": 116}, {"auto_retry_max_wait_seconds": 0}, {"auto_retry_max_wait_seconds": 3601}, {"auto_retry_max_attempts": "secret-invalid"}} {
 		if _, err := parseAutoRetryPolicy(opts); err == nil || strings.Contains(err.Error(), "secret-invalid") {
 			t.Fatal("invalid policy accepted or value leaked")
 		}

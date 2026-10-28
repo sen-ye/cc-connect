@@ -49,7 +49,7 @@ func (p *providerProxy) autoRetryHint(now time.Time) (time.Duration, bool) {
 	return max(0, hint.until.Sub(now)), hint.hard
 }
 
-// Long valid server delays remain long. The recovery budget rejects them;
+// Long valid server delays remain long. Recovery wait limits reject them;
 // treating them as missing would accidentally retry earlier than requested.
 func retryAfterMinimum(raw string, now time.Time) (time.Duration, bool) {
 	raw = strings.TrimSpace(raw)

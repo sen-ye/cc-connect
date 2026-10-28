@@ -1733,6 +1733,14 @@ app_secret = "your-feishu-app-secret"
 # Supported levels depend on the selected model; /reasoning lists its capabilities.
 # 支持的档位取决于当前模型；使用 /reasoning 查看该模型可用的档位。
 #
+# Optional: continue failed turns after native retries end (disabled by default).
+# 可选：原生重试结束后自动续跑失败任务（默认关闭，需要 app_server 后端）。
+# backend = "app_server"
+# auto_retry_max_attempts = 115     # 0–115; 0 disables / 0 关闭
+# auto_retry_max_wait_seconds = 3600 # Cumulative wait, 1–3600 seconds / 累计等待秒数
+# Backoff: 2, 4, 8, 16, 32, 32… seconds; jitter also stays within 32 seconds.
+# 退避从 2 秒递增到 32 秒；含抖动在内不超过 32 秒，详细规则见 docs/codex-session-providers.md。
+#
 # Optional: project system prompt / 可选：项目系统提示
 # Codex has no native system-prompt flag, so cc-connect injects this as a
 # preamble prepended to your first message of each new session (resumed
