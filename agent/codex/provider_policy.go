@@ -39,6 +39,9 @@ func (t *providerRequestDefaultsTransport) RoundTrip(request *http.Request) (*ht
 	if len(prefix) > maxReplayRequestBytes {
 		return t.base.RoundTrip(outgoing)
 	}
+	// Mark a fully buffered body. Reading through EOF lets net/http detect
+	// disconnects while a downstream quota gate is waiting to send it.
+	outgoing.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(prefix)), nil }
 	rewritten, changed := prefix, false
 	if t.mirrorDeveloper {
 		rewritten, changed = mirrorDeveloperInstructions(rewritten)

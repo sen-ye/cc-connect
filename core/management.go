@@ -170,6 +170,8 @@ type GlobalCodexConfig struct {
 	ProxyURL                    string            `json:"proxy_url,omitempty"`
 	ModelCatalogURL             string            `json:"model_catalog_url,omitempty"`
 	MaxOutputTokens             int               `json:"max_output_tokens,omitempty"`
+	AutoRetryMaxDelaySeconds    int               `json:"auto_retry_max_delay_seconds,omitempty"`
+	RateLimitBackoffMaxSeconds  int               `json:"rate_limit_backoff_max_seconds,omitempty"`
 	ReasoningReplayFallback     bool              `json:"reasoning_replay_fallback,omitempty"`
 	MirrorDeveloperInstructions *bool             `json:"mirror_developer_instructions,omitempty"`
 }
@@ -1497,6 +1499,8 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			prov.CodexProxyURL = body.Codex.ProxyURL
 			prov.CodexModelCatalogURL = body.Codex.ModelCatalogURL
 			prov.CodexMaxOutputTokens = body.Codex.MaxOutputTokens
+			prov.CodexAutoRetryMaxDelaySeconds = body.Codex.AutoRetryMaxDelaySeconds
+			prov.CodexRateLimitBackoffMaxSeconds = body.Codex.RateLimitBackoffMaxSeconds
 			prov.CodexReasoningReplayFallback = body.Codex.ReasoningReplayFallback
 			prov.CodexMirrorDeveloperInstructions = body.Codex.MirrorDeveloperInstructions
 		}

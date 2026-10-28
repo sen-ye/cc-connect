@@ -55,6 +55,29 @@ func (p autoRetryPolicy) addOptions(opts map[string]any) {
 	}
 }
 
+// Provider overrides are applied to a copy when starting/resuming a session.
+// They must not change the agent default shared by other conversations.
+func (p autoRetryPolicy) forProvider(provider *core.ProviderConfig) (autoRetryPolicy, error) {
+	if provider == nil || provider.CodexAutoRetryMaxDelaySeconds == 0 {
+		return p, nil
+	}
+	seconds := provider.CodexAutoRetryMaxDelaySeconds
+	if seconds < 1 || seconds > 3600 {
+		return p, fmt.Errorf("codex: provider auto_retry_max_delay_seconds must be between 1 and 3600, or 0 to inherit")
+	}
+	p.maxDelay = time.Duration(seconds) * time.Second
+	// Advertise only attempts that can fit the inherited cumulative wait budget.
+	// Jitter and a server's Retry-After can still exhaust that budget earlier.
+	delay, remaining, attempts := min(p.baseDelay, p.maxDelay), p.maxWait, 0
+	for attempts < p.maxAttempts && delay <= remaining {
+		remaining -= delay
+		attempts++
+		delay = min(delay*2, p.maxDelay)
+	}
+	p.maxAttempts = attempts
+	return p, nil
+}
+
 // Protected by appServerSession.stateMu. A generation invalidates waiting
 // retries when a user supplies new input or stops the session.
 type autoRetryState struct {

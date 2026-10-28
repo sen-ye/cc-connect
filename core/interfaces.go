@@ -464,6 +464,8 @@ type ProviderConfig struct {
 	CodexProxyURL                    string            // optional fixed HTTP(S) network proxy for this provider
 	CodexModelCatalogURL             string            // optional full URL of the Codex-native model catalog
 	CodexMaxOutputTokens             int               // optional Responses output limit when a request omits it; 0 disables injection
+	CodexAutoRetryMaxDelaySeconds    int               // bridge continuation backoff cap; 0 inherits the agent policy
+	CodexRateLimitBackoffMaxSeconds  int               // opt-in per-key request cooldown on this proxy; 0 disables
 	CodexMirrorDeveloperInstructions *bool             // nil enables the default; false opts out of local instructions supplementation
 	// Opt in to one lossy retry when a Responses endpoint rejects encrypted reasoning.
 	CodexReasoningReplayFallback bool

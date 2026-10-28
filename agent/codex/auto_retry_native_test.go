@@ -96,7 +96,7 @@ func runNativeAutoRetry(t *testing.T, bin string, stop bool) {
 		autoRetry: autoRetryPolicy{maxAttempts: 2, maxWait: time.Second, baseDelay: delay, maxDelay: time.Second},
 		configEnv: []string{"CC_NATIVE_TEST_BINARY=" + bin, "OPENAI_API_KEY=", "http_proxy=", "https_proxy=", "HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=", "all_proxy="}}
 	a.SetProviders([]core.ProviderConfig{
-		{Name: "Seed", BaseURL: server.URL + "/openai", CodexModelCatalogURL: server.URL + "/models", CodexMaxOutputTokens: 64000, CodexReasoningReplayFallback: true,
+		{Name: "Seed", BaseURL: server.URL + "/openai", CodexModelCatalogURL: server.URL + "/models", CodexMaxOutputTokens: 64000, CodexReasoningReplayFallback: true, CodexAutoRetryMaxDelaySeconds: 32, CodexRateLimitBackoffMaxSeconds: 32,
 			CodexHTTPHeaders: map[string]string{"api-key": "same-seed-key", "x-session-id": "same-affinity"}},
 		{Name: "Other", APIKey: "must-not-be-used", BaseURL: "http://127.0.0.1:1"},
 	})
@@ -107,6 +107,16 @@ func runNativeAutoRetry(t *testing.T, bin string, stop bool) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	if s.(*appServerSession).autoRetry.policy.maxDelay != 32*time.Second || a.autoRetry.maxDelay != time.Second {
+		t.Fatal("native session did not use an isolated provider retry policy")
+	}
+	gate := s.(*appServerSession).providerProxy.cooldown
+	if gate == nil {
+		t.Fatal("native provider did not install the configured cooldown")
+	}
+	gate.mu.Lock()
+	gate.base = 100 * time.Millisecond // exercise a queued native retry without a multi-second test delay
+	gate.mu.Unlock()
 	if !assertProviderReply(t, s, "native Seed replay OK", false) {
 		return
 	}

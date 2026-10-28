@@ -32,6 +32,7 @@ func ServeProviderProxy(ctx context.Context, address string, provider core.Provi
 		ProviderName: provider.Name, ModelCatalogURL: provider.CodexModelCatalogURL,
 		MaxOutputTokens: provider.CodexMaxOutputTokens, ReasoningReplayFallback: provider.CodexReasoningReplayFallback,
 		MirrorDeveloperInstructions: provider.MirrorsCodexDeveloperInstructions(), ListenAddress: address,
+		RateLimitBackoffMaxSeconds: provider.CodexRateLimitBackoffMaxSeconds,
 	})
 	if err != nil {
 		return err

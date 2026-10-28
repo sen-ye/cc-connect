@@ -20,20 +20,23 @@ func (p *providerProxy) rememberRetryResponse(response *http.Response) {
 	}
 	now := time.Now()
 	hint := providerRetryHint{observed: now}
-	if delay, ok := retryAfterMinimum(response.Header.Get("Retry-After"), now); ok {
+	if delay := providerRetryMinimum(response.Header, now); delay > 0 {
 		hint.until = now.Add(delay)
-	}
-	if ms, err := strconv.ParseFloat(response.Header.Get("Retry-After-Ms"), 64); err == nil && ms > 0 && !math.IsInf(ms, 0) {
-		delay := time.Duration(min(ms, float64(math.MaxInt64)/float64(time.Millisecond))) * time.Millisecond
-		if until := now.Add(delay); until.After(hint.until) {
-			hint.until = until
-		}
 	}
 	dimension := response.Header.Get("X-RateLimit-Dimension")
 	hint.hard = dimension == "daily_key_model" || dimension == "daily_key_total" || strings.EqualFold(response.Header.Get("X-Should-Retry"), "false")
 	p.retryMu.Lock()
 	p.retryHint = hint
 	p.retryMu.Unlock()
+}
+
+func providerRetryMinimum(headers http.Header, now time.Time) time.Duration {
+	delay, _ := retryAfterMinimum(headers.Get("Retry-After"), now)
+	if ms, err := strconv.ParseFloat(headers.Get("Retry-After-Ms"), 64); err == nil && ms > 0 && !math.IsInf(ms, 0) && !math.IsNaN(ms) {
+		milliseconds := time.Duration(min(ms, float64(math.MaxInt64)/float64(time.Millisecond))) * time.Millisecond
+		delay = max(delay, milliseconds)
+	}
+	return delay
 }
 
 func (p *providerProxy) autoRetryHint(now time.Time) (time.Duration, bool) {

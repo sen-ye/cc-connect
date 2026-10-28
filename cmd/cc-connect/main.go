@@ -1975,6 +1975,8 @@ func configProviderToCore(p config.ProviderConfig) core.ProviderConfig {
 		c.CodexProxyURL = p.Codex.ProxyURL
 		c.CodexModelCatalogURL = p.Codex.ModelCatalogURL
 		c.CodexMaxOutputTokens = p.Codex.MaxOutputTokens
+		c.CodexAutoRetryMaxDelaySeconds = p.Codex.AutoRetryMaxDelaySeconds
+		c.CodexRateLimitBackoffMaxSeconds = p.Codex.RateLimitBackoffMaxSeconds
 		c.CodexReasoningReplayFallback = p.Codex.ReasoningReplayFallback
 		c.CodexMirrorDeveloperInstructions = p.Codex.MirrorDeveloperInstructions
 	}
@@ -1989,13 +1991,15 @@ func coreProviderToConfig(p core.ProviderConfig) config.ProviderConfig {
 		Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
 		SettingsFile: p.SettingsFile,
 	}
-	if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" || p.CodexMaxOutputTokens != 0 || p.CodexReasoningReplayFallback || p.CodexMirrorDeveloperInstructions != nil {
+	if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" || p.CodexMaxOutputTokens != 0 || p.CodexAutoRetryMaxDelaySeconds != 0 || p.CodexRateLimitBackoffMaxSeconds != 0 || p.CodexReasoningReplayFallback || p.CodexMirrorDeveloperInstructions != nil {
 		c.Codex = &config.CodexProviderConfig{
 			WireAPI: p.CodexWireAPI, HTTPHeaders: p.CodexHTTPHeaders,
 			EnvKey: p.CodexEnvKey, EnvHTTPHeaders: p.CodexEnvHTTPHeaders,
 			ProxyURL:                    p.CodexProxyURL,
 			ModelCatalogURL:             p.CodexModelCatalogURL,
 			MaxOutputTokens:             p.CodexMaxOutputTokens,
+			AutoRetryMaxDelaySeconds:    p.CodexAutoRetryMaxDelaySeconds,
+			RateLimitBackoffMaxSeconds:  p.CodexRateLimitBackoffMaxSeconds,
 			ReasoningReplayFallback:     p.CodexReasoningReplayFallback,
 			MirrorDeveloperInstructions: p.CodexMirrorDeveloperInstructions,
 		}
@@ -2093,6 +2097,8 @@ func configProviderToGlobal(p config.ProviderConfig) core.GlobalProviderInfo {
 			ProxyURL:                    p.Codex.ProxyURL,
 			ModelCatalogURL:             p.Codex.ModelCatalogURL,
 			MaxOutputTokens:             p.Codex.MaxOutputTokens,
+			AutoRetryMaxDelaySeconds:    p.Codex.AutoRetryMaxDelaySeconds,
+			RateLimitBackoffMaxSeconds:  p.Codex.RateLimitBackoffMaxSeconds,
 			ReasoningReplayFallback:     p.Codex.ReasoningReplayFallback,
 			MirrorDeveloperInstructions: p.Codex.MirrorDeveloperInstructions,
 		}
@@ -2135,6 +2141,8 @@ func globalProviderToConfig(info core.GlobalProviderInfo) config.ProviderConfig 
 			ProxyURL:                    info.Codex.ProxyURL,
 			ModelCatalogURL:             info.Codex.ModelCatalogURL,
 			MaxOutputTokens:             info.Codex.MaxOutputTokens,
+			AutoRetryMaxDelaySeconds:    info.Codex.AutoRetryMaxDelaySeconds,
+			RateLimitBackoffMaxSeconds:  info.Codex.RateLimitBackoffMaxSeconds,
 			ReasoningReplayFallback:     info.Codex.ReasoningReplayFallback,
 			MirrorDeveloperInstructions: info.Codex.MirrorDeveloperInstructions,
 		}

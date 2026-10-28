@@ -50,6 +50,7 @@ wire_api = "responses"
 reasoning_replay_fallback = true
 max_output_tokens = 64000
 mirror_developer_instructions = true
+rate_limit_backoff_max_seconds = 32
 [provider.codex.env_http_headers]
 api-key = "SEED_TEST_KEY"
 `
@@ -61,7 +62,7 @@ api-key = "SEED_TEST_KEY"
 		t.Fatal(err)
 	}
 	p := nativeProvider(cfg.Provider)
-	if !p.CodexReasoningReplayFallback || p.CodexMaxOutputTokens != 64000 || !p.MirrorsCodexDeveloperInstructions() || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
+	if !p.CodexReasoningReplayFallback || p.CodexMaxOutputTokens != 64000 || p.CodexRateLimitBackoffMaxSeconds != 32 || !p.MirrorsCodexDeveloperInstructions() || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
 		t.Fatal("provider recovery/auth config lost")
 	}
 	before, _ := os.ReadFile(file)
@@ -113,6 +114,7 @@ base_url = "http://127.0.0.1:1"
 model = "gpt-6-astra"
 [provider.codex]
 mirror_developer_instructions = true
+rate_limit_backoff_max_seconds = 32
 `
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
 		t.Fatal(err)

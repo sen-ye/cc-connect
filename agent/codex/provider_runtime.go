@@ -48,12 +48,13 @@ func prepareProviderRuntime(provider *core.ProviderConfig, extraEnv []string) (p
 		return cfg, nil
 	}
 	cfg.baseURL = provider.BaseURL
-	if provider.CodexProxyURL != "" || provider.CodexReasoningReplayFallback || provider.CodexMaxOutputTokens != 0 || provider.MirrorsCodexDeveloperInstructions() {
+	if provider.CodexProxyURL != "" || provider.CodexReasoningReplayFallback || provider.CodexMaxOutputTokens != 0 || provider.MirrorsCodexDeveloperInstructions() || provider.CodexRateLimitBackoffMaxSeconds != 0 {
 		var err error
 		cfg.proxy, cfg.baseURL, err = newProviderProxyWithOptions(provider.BaseURL, provider.CodexProxyURL, providerProxyOptions{
 			ModelCatalogURL: provider.CodexModelCatalogURL, ReasoningReplayFallback: provider.CodexReasoningReplayFallback,
 			MaxOutputTokens: provider.CodexMaxOutputTokens, ProviderName: provider.Name,
 			MirrorDeveloperInstructions: provider.MirrorsCodexDeveloperInstructions(),
+			RateLimitBackoffMaxSeconds:  provider.CodexRateLimitBackoffMaxSeconds,
 		})
 		if err != nil {
 			return cfg, err

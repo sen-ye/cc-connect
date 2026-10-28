@@ -11,7 +11,7 @@ import (
 
 func TestProjectProviderAdd_PreservesCodexRecoveryAndEnvironmentReferences(t *testing.T) {
 	t.Setenv("SEED_PROXY_TEST_KEY", "test-secret-not-to-serialize")
-	const body = `{"name":"Seed","model":"gpt-6-astra","base_url":"https://router.example/responses/openai?api-version=v1","codex":{"wire_api":"responses","env_key":"SEED_PROXY_TEST_KEY","env_http_headers":{"api-key":"SEED_PROXY_TEST_KEY"},"http_headers":{"X-Test":"metadata"},"proxy_url":"http://proxy.example:8118","model_catalog_url":"https://router.example/models?api-version=v1","reasoning_replay_fallback":true,"max_output_tokens":64000,"mirror_developer_instructions":true}}`
+	const body = `{"name":"Seed","model":"gpt-6-astra","base_url":"https://router.example/responses/openai?api-version=v1","codex":{"wire_api":"responses","env_key":"SEED_PROXY_TEST_KEY","env_http_headers":{"api-key":"SEED_PROXY_TEST_KEY"},"http_headers":{"X-Test":"metadata"},"proxy_url":"http://proxy.example:8118","model_catalog_url":"https://router.example/models?api-version=v1","reasoning_replay_fallback":true,"max_output_tokens":64000,"auto_retry_max_delay_seconds":32,"rate_limit_backoff_max_seconds":32,"mirror_developer_instructions":true}}`
 	for _, failSave := range []bool{false, true} {
 		t.Run(map[bool]string{false: "saved", true: "save_failed"}[failSave], func(t *testing.T) {
 			agent := &stubPersistProvider{providers: []ProviderConfig{{Name: "aidp"}}, active: "aidp"}
@@ -29,7 +29,7 @@ func TestProjectProviderAdd_PreservesCodexRecoveryAndEnvironmentReferences(t *te
 			(&ManagementServer{}).handleProjectProviders(w, httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body)), e, "")
 			if !saved.CodexReasoningReplayFallback || saved.CodexWireAPI != "responses" || saved.CodexEnvKey != "SEED_PROXY_TEST_KEY" ||
 				saved.CodexEnvHTTPHeaders["api-key"] != "SEED_PROXY_TEST_KEY" || saved.CodexHTTPHeaders["X-Test"] != "metadata" ||
-				saved.CodexProxyURL != "http://proxy.example:8118" || saved.CodexModelCatalogURL != "https://router.example/models?api-version=v1" || saved.CodexMaxOutputTokens != 64000 || !saved.MirrorsCodexDeveloperInstructions() {
+				saved.CodexProxyURL != "http://proxy.example:8118" || saved.CodexModelCatalogURL != "https://router.example/models?api-version=v1" || saved.CodexMaxOutputTokens != 64000 || saved.CodexAutoRetryMaxDelaySeconds != 32 || saved.CodexRateLimitBackoffMaxSeconds != 32 || !saved.MirrorsCodexDeveloperInstructions() {
 				t.Fatal("provider persistence callback lost Codex settings")
 			}
 			if saved.APIKey != "" || strings.Contains(w.Body.String(), "test-secret-not-to-serialize") {
@@ -42,7 +42,7 @@ func TestProjectProviderAdd_PreservesCodexRecoveryAndEnvironmentReferences(t *te
 				if w.Code != http.StatusInternalServerError || agent.count() != 1 {
 					t.Fatal("failed persistence installed the provider")
 				}
-			} else if w.Code != http.StatusOK || agent.count() != 2 || !agent.ListProviders()[1].CodexReasoningReplayFallback || agent.ListProviders()[1].CodexMaxOutputTokens != 64000 || !agent.ListProviders()[1].MirrorsCodexDeveloperInstructions() {
+			} else if w.Code != http.StatusOK || agent.count() != 2 || !agent.ListProviders()[1].CodexReasoningReplayFallback || agent.ListProviders()[1].CodexMaxOutputTokens != 64000 || agent.ListProviders()[1].CodexAutoRetryMaxDelaySeconds != 32 || agent.ListProviders()[1].CodexRateLimitBackoffMaxSeconds != 32 || !agent.ListProviders()[1].MirrorsCodexDeveloperInstructions() {
 				t.Fatal("saved Codex settings were not installed")
 			}
 		})

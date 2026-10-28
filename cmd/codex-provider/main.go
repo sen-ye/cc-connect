@@ -121,6 +121,7 @@ func nativeProvider(p config.ProviderConfig) core.ProviderConfig {
 		out.CodexHTTPHeaders, out.CodexEnvHTTPHeaders = c.HTTPHeaders, c.EnvHTTPHeaders
 		out.CodexReasoningReplayFallback = c.ReasoningReplayFallback
 		out.CodexMaxOutputTokens = c.MaxOutputTokens
+		out.CodexRateLimitBackoffMaxSeconds = c.RateLimitBackoffMaxSeconds
 		out.CodexMirrorDeveloperInstructions = c.MirrorDeveloperInstructions
 	}
 	return out

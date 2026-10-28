@@ -96,6 +96,7 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 		HTTPHeaders: map[string]string{"X-Test": "original"}, EnvHTTPHeaders: map[string]string{"api-key": "PROVIDER_ENV_KEY"},
 		ReasoningReplayFallback:     true,
 		MaxOutputTokens:             64000,
+		AutoRetryMaxDelaySeconds:    32,
 		MirrorDeveloperInstructions: mirrorInstructionsValue(true),
 	}
 	source := AgentConfig{Type: "codex", Providers: []ProviderConfig{{Name: "Seed", Codex: settings}}}
@@ -108,8 +109,9 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 	got.EnvHTTPHeaders["api-key"] = "OTHER_ENV_KEY"
 	got.ReasoningReplayFallback = false
 	got.MaxOutputTokens = 32000
+	got.AutoRetryMaxDelaySeconds = 16
 	*got.MirrorDeveloperInstructions = false
-	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback || settings.MaxOutputTokens != 64000 || !*settings.MirrorDeveloperInstructions {
+	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback || settings.MaxOutputTokens != 64000 || settings.AutoRetryMaxDelaySeconds != 32 || !*settings.MirrorDeveloperInstructions {
 		t.Fatal("cloned project mutated the source provider configuration")
 	}
 }

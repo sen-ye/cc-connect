@@ -26,6 +26,7 @@ type providerProxy struct {
 	retryMu   sync.Mutex
 	retryHint providerRetryHint
 	done      chan error
+	cooldown  *providerCooldown
 }
 
 const providerCatalogPath = "/_cc_connect_models"
@@ -35,6 +36,8 @@ type providerProxyOptions struct {
 	ReasoningReplayFallback     bool
 	MaxOutputTokens             int
 	MirrorDeveloperInstructions bool
+	RateLimitBackoffMaxSeconds  int
+	cooldown                    *providerCooldown
 	ListenAddress               string // empty selects a private ephemeral listener
 	ProviderName                string
 	observeResponse             func(*http.Response)
@@ -52,6 +55,9 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 	if options.MaxOutputTokens < 0 {
 		return nil, "", fmt.Errorf("codex: provider max_output_tokens must not be negative")
 	}
+	if options.RateLimitBackoffMaxSeconds < 0 || options.RateLimitBackoffMaxSeconds > 3600 {
+		return nil, "", fmt.Errorf("codex: provider rate_limit_backoff_max_seconds must be between 0 and 3600")
+	}
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -60,7 +66,7 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 		return nil, "", fmt.Errorf("codex: provider base_url must be an absolute HTTP(S) URL")
 	}
 	var upstreamProxy *url.URL
-	if proxyURL != "" || (!options.ReasoningReplayFallback && options.MaxOutputTokens == 0 && !options.MirrorDeveloperInstructions && options.ListenAddress == "") {
+	if proxyURL != "" || (!options.ReasoningReplayFallback && options.MaxOutputTokens == 0 && !options.MirrorDeveloperInstructions && options.RateLimitBackoffMaxSeconds == 0 && options.ListenAddress == "") {
 		upstreamProxy, err = parseProviderProxyURL(proxyURL)
 		if err != nil {
 			return nil, "", fmt.Errorf("codex: provider proxy_url must be an absolute HTTP(S) URL")
@@ -92,15 +98,22 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 		transport.Proxy = http.ProxyURL(upstreamProxy)
 	}
 	p := &providerProxy{transport: transport, done: make(chan error, 1)}
+	if options.RateLimitBackoffMaxSeconds > 0 {
+		p.cooldown = newProviderCooldown(time.Duration(options.RateLimitBackoffMaxSeconds)*time.Second, options.ProviderName)
+		options.cooldown = p.cooldown
+	}
 	options.observeResponse = p.rememberRetryResponse
 	handler := providerProxyHandler(target, catalog, transport, options)
 	if options.ListenAddress != "" {
 		forward := handler
-		health, _ := json.Marshal(map[string]any{"ok": true, "service": "codex-provider", "provider": options.ProviderName})
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet && r.URL.Path == "/_cc_connect_health" {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(health)
+				health := map[string]any{"ok": true, "service": "codex-provider", "provider": options.ProviderName}
+				if p.cooldown != nil {
+					health["cooldown"] = p.cooldown.snapshot()
+				}
+				_ = json.NewEncoder(w).Encode(health)
 				return
 			}
 			forward.ServeHTTP(w, r)
@@ -126,7 +139,10 @@ func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, o
 	if options.ReasoningReplayFallback {
 		reverse.Transport = &reasoningReplayTransport{base: transport}
 	}
-	if options.MaxOutputTokens > 0 || options.MirrorDeveloperInstructions {
+	if options.cooldown != nil {
+		reverse.Transport = &providerCooldownTransport{base: reverse.Transport, gate: options.cooldown}
+	}
+	if options.MaxOutputTokens > 0 || options.MirrorDeveloperInstructions || options.cooldown != nil {
 		reverse.Transport = &providerRequestDefaultsTransport{base: reverse.Transport, limit: options.MaxOutputTokens, mirrorDeveloper: options.MirrorDeveloperInstructions}
 	}
 	reverse.ModifyResponse = func(response *http.Response) error {

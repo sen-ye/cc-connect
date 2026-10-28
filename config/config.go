@@ -604,8 +604,8 @@ type ProviderConfig struct {
 	Codex           *CodexProviderConfig             `toml:"codex,omitempty"`             // Codex-specific provider settings
 }
 
-// CodexProviderConfig holds Codex CLI-specific provider fields
-// that map to [model_providers.<name>] in Codex's own config.toml.
+// CodexProviderConfig holds native model_providers fields and the bridge's
+// explicitly documented request/recovery policies.
 type CodexProviderConfig struct {
 	ModelCatalogURL string            `toml:"model_catalog_url,omitempty" json:"model_catalog_url,omitempty"`
 	ProxyURL        string            `toml:"proxy_url,omitempty" json:"proxy_url,omitempty"`
@@ -615,6 +615,10 @@ type CodexProviderConfig struct {
 	EnvHTTPHeaders  map[string]string `toml:"env_http_headers,omitempty" json:"env_http_headers,omitempty"`
 	// A cc-connect request default, not a native Codex provider field; 0 disables injection.
 	MaxOutputTokens int `toml:"max_output_tokens,omitzero" json:"max_output_tokens,omitempty"`
+	// Applies to cc-connect app-server continuation, not the native CLI's HTTP retries. Zero inherits the agent policy.
+	AutoRetryMaxDelaySeconds int `toml:"auto_retry_max_delay_seconds,omitzero" json:"auto_retry_max_delay_seconds,omitempty"`
+	// Shared per-key cooldown on a provider proxy, including standalone listeners. Zero disables it.
+	RateLimitBackoffMaxSeconds int `toml:"rate_limit_backoff_max_seconds,omitzero" json:"rate_limit_backoff_max_seconds,omitempty"`
 	// Nil enables supplementation using the current client/model prompt; false explicitly disables it.
 	MirrorDeveloperInstructions *bool `toml:"mirror_developer_instructions,omitempty" json:"mirror_developer_instructions,omitempty"`
 	// A cc-connect request-recovery option, not a native Codex provider field.

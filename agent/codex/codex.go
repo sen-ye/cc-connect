@@ -551,6 +551,10 @@ func (a *Agent) startSession(ctx context.Context, sessionID string, providerName
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.Unlock()
 
+	autoRetry, err = autoRetry.forProvider(provider)
+	if err != nil {
+		return nil, err
+	}
 	cfg, err := prepareProviderRuntime(provider, extraEnv)
 	if err != nil {
 		return nil, err
