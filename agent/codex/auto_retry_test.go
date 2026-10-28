@@ -200,6 +200,112 @@ func TestAutoRetry_LateRPCFailureDoesNotCancelNextAttempt(t *testing.T) {
 	takeRecoveryEvent(t, s, core.EventResult)
 }
 
+func recoveryItemNotification(s *appServerSession, threadID, turnID string, item map[string]any) {
+	data, _ := json.Marshal(map[string]any{"threadId": threadID, "turnId": turnID, "item": item})
+	s.handleNotification("item/completed", data)
+}
+
+func TestAutoRetry_ConfirmedProgressResetsFailureStreakAndWaitBudget(t *testing.T) {
+	for _, item := range []map[string]any{
+		{"type": "agentMessage", "text": "Completed the first step."},
+		{"type": "commandExecution", "status": "completed", "exitCode": 0},
+		{"type": "fileChange", "status": "completed"},
+		{"type": "mcpToolCall", "status": "completed", "result": map[string]any{"ok": true}},
+		{"type": "dynamicToolCall", "status": "completed", "success": true},
+		{"type": "webSearch", "query": "recovery"},
+	} {
+		t.Run(item["type"].(string), func(t *testing.T) {
+			s, w := newRecoveryFixture(t)
+			startRecoveryUserTurn(t, s, w, "task", "t0")
+			for i := 0; i < 2; i++ {
+				recoveryNotification(s, "turn/completed", fmt.Sprint("t", i), "failed", errors.New("last status: 429"))
+				takeRecoveryEvent(t, s, core.EventRetry)
+				acceptRecoveryRPC(s, takeRecoveryRPC(t, w), fmt.Sprint("t", i+1))
+			}
+			recoveryItemNotification(s, s.CurrentSessionID(), "t2", item)
+			s.stateMu.Lock()
+			attempts, waited, active := s.autoRetry.attempts, s.autoRetry.waited, s.currentTurn
+			s.stateMu.Unlock()
+			if attempts != 0 || waited != 0 || active != "t2" {
+				t.Fatalf("progress did not reset recovery while preserving the turn: attempts=%d waited=%s turn=%s", attempts, waited, active)
+			}
+			recoveryNotification(s, "turn/completed", "t2", "failed", errors.New("last status: 429"))
+			if event := takeRecoveryEvent(t, s, core.EventRetry); event.Retry.Attempt != 1 {
+				t.Fatalf("new failure did not restart at attempt 1: %+v", event.Retry)
+			}
+			s.stateMu.Lock()
+			waited = s.autoRetry.waited
+			s.stateMu.Unlock()
+			if waited != 15*time.Millisecond {
+				t.Fatalf("backoff did not restart at the base delay: %s", waited)
+			}
+			acceptRecoveryRPC(s, takeRecoveryRPC(t, w), "t3")
+			recoveryNotification(s, "turn/completed", "t3", "completed", nil)
+			takeRecoveryEvent(t, s, core.EventResult)
+			s.stateMu.Lock()
+			attempts, waited = s.autoRetry.attempts, s.autoRetry.waited
+			s.stateMu.Unlock()
+			if attempts != 0 || waited != 0 {
+				t.Fatal("successful turn retained a recovery failure streak")
+			}
+		})
+	}
+}
+
+func TestAutoRetry_UnconfirmedOrForeignProgressDoesNotResetFailureStreak(t *testing.T) {
+	for _, tc := range []struct {
+		name, thread, turn string
+		item               map[string]any
+	}{
+		{"child_thread", "child", "t1", map[string]any{"type": "agentMessage", "text": "done"}},
+		{"retired_turn", "saved-seed-thread", "t0", map[string]any{"type": "agentMessage", "text": "done"}},
+		{"unscoped_thread", "", "t1", map[string]any{"type": "agentMessage", "text": "done"}},
+		{"unscoped_turn", "saved-seed-thread", "", map[string]any{"type": "agentMessage", "text": "done"}},
+		{"empty_message", "saved-seed-thread", "t1", map[string]any{"type": "agentMessage", "text": " "}},
+		{"reasoning_only", "saved-seed-thread", "t1", map[string]any{"type": "reasoning", "text": "thinking"}},
+		{"echoed_input", "saved-seed-thread", "t1", map[string]any{"type": "userMessage", "text": "continue"}},
+		{"failed_tool", "saved-seed-thread", "t1", map[string]any{"type": "commandExecution", "status": "failed"}},
+		{"failed_command", "saved-seed-thread", "t1", map[string]any{"type": "commandExecution", "status": "completed", "exitCode": 1}},
+		{"incomplete_tool", "saved-seed-thread", "t1", map[string]any{"type": "commandExecution", "status": "inProgress"}},
+		{"missing_status", "saved-seed-thread", "t1", map[string]any{"type": "mcpToolCall"}},
+		{"mcp_error", "saved-seed-thread", "t1", map[string]any{"type": "mcpToolCall", "status": "completed", "error": map[string]any{"message": "failed"}}},
+		{"dynamic_error", "saved-seed-thread", "t1", map[string]any{"type": "dynamicToolCall", "status": "completed", "success": false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w := newRecoveryFixture(t)
+			startRecoveryUserTurn(t, s, w, "task", "t0")
+			recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+			takeRecoveryEvent(t, s, core.EventRetry)
+			acceptRecoveryRPC(s, takeRecoveryRPC(t, w), "t1")
+			recoveryItemNotification(s, tc.thread, tc.turn, tc.item)
+			s.stateMu.Lock()
+			attempts, waited := s.autoRetry.attempts, s.autoRetry.waited
+			s.stateMu.Unlock()
+			if attempts != 1 || waited != 15*time.Millisecond {
+				t.Fatalf("unconfirmed progress reset the budget: attempts=%d waited=%s", attempts, waited)
+			}
+		})
+	}
+}
+
+func TestAutoRetry_LateRPCFailureCannotCancelRestartedFailureStreak(t *testing.T) {
+	s, w := newRecoveryFixture(t)
+	startRecoveryUserTurn(t, s, w, "task", "t0")
+	recoveryNotification(s, "turn/completed", "t0", "failed", errors.New("last status: 429"))
+	takeRecoveryEvent(t, s, core.EventRetry)
+	first := takeRecoveryRPC(t, w)
+	recoveryNotification(s, "turn/started", "t1", "inProgress", nil)
+	recoveryItemNotification(s, s.CurrentSessionID(), "t1", map[string]any{"type": "agentMessage", "text": "saved progress"})
+	recoveryNotification(s, "turn/completed", "t1", "failed", errors.New("last status: 429"))
+	if event := takeRecoveryEvent(t, s, core.EventRetry); event.Retry.Attempt != 1 {
+		t.Fatalf("new failure did not restart at attempt 1: %+v", event.Retry)
+	}
+	s.handleResponse(rpcResponseEnvelope{ID: first.ID, Error: &rpcError{Message: "late start failure from the previous streak"}})
+	acceptRecoveryRPC(s, takeRecoveryRPC(t, w), "t2")
+	recoveryNotification(s, "turn/completed", "t2", "completed", nil)
+	takeRecoveryEvent(t, s, core.EventResult)
+}
+
 func TestAutoRetry_CumulativeWaitBudgetAndAmbiguousStartFailure(t *testing.T) {
 	t.Run("wait_budget", func(t *testing.T) {
 		s, w := newRecoveryFixture(t)
@@ -229,7 +335,7 @@ func TestAutoRetry_CumulativeWaitBudgetAndAmbiguousStartFailure(t *testing.T) {
 	})
 }
 
-func TestAutoRetry_BackoffNeverExceedsThirtyTwoSeconds(t *testing.T) {
+func TestAutoRetry_BackoffNeverExceedsTenSeconds(t *testing.T) {
 	for _, jitter := range []bool{false, true} {
 		t.Run(fmt.Sprint("jitter=", jitter), func(t *testing.T) {
 			s, _ := newRecoveryFixture(t)
@@ -240,12 +346,12 @@ func TestAutoRetry_BackoffNeverExceedsThirtyTwoSeconds(t *testing.T) {
 			policy.jitter = jitter
 			s.autoRetry.policy = policy
 			s.currentTurn = "failed-turn"
-			for _, seconds := range []int{2, 4, 8, 16, 32, 32, 32, 32} {
+			for _, seconds := range []int{2, 4, 8, 10, 10, 10, 10, 10} {
 				delay := scheduledRecoveryDelay(t, s)
 				minimum := time.Duration(seconds) * time.Second
 				maximum := minimum
 				if jitter {
-					maximum = min(minimum+minimum/10, 32*time.Second)
+					maximum = min(minimum+minimum/10, 10*time.Second)
 				}
 				if delay < minimum || delay > maximum {
 					t.Fatalf("delay = %s, want [%s, %s]", delay, minimum, maximum)
@@ -276,11 +382,11 @@ func scheduledRecoveryDelay(t *testing.T, s *appServerSession) time.Duration {
 	return delay
 }
 
-func TestAutoRetry_ThirtyTwoSecondCapAllows115AttemptsWithinHour(t *testing.T) {
+func TestAutoRetry_TenSecondCapAllows361AttemptsWithinHour(t *testing.T) {
 	for _, jitter := range []bool{false, true} {
 		t.Run(fmt.Sprint("jitter=", jitter), func(t *testing.T) {
 			s, _ := newRecoveryFixture(t)
-			policy, err := parseAutoRetryPolicy(map[string]any{"auto_retry_max_attempts": 115, "auto_retry_max_wait_seconds": 3600})
+			policy, err := parseAutoRetryPolicy(map[string]any{"auto_retry_max_attempts": 361, "auto_retry_max_wait_seconds": 3600})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -288,22 +394,22 @@ func TestAutoRetry_ThirtyTwoSecondCapAllows115AttemptsWithinHour(t *testing.T) {
 			s.autoRetry.policy = policy
 			s.currentTurn = "failed-turn"
 			var total time.Duration
-			for range 115 {
+			for range 361 {
 				total += scheduledRecoveryDelay(t, s)
 			}
-			// 2 + 4 + 8 + 16 + 111*32 = 3582 seconds. Positive jitter adds
-			// at most 3 seconds before the cap; another attempt exceeds 3600.
-			if total < 3582*time.Second || total > 3585*time.Second {
-				t.Fatalf("unexpected total wait for 115 recoveries: %s", total)
+			// 2 + 4 + 8 + 358*10 = 3594 seconds. Positive jitter adds
+			// at most 1.4 seconds before the cap; another attempt exceeds 3600.
+			if total < 3594*time.Second || total > 3595400*time.Millisecond {
+				t.Fatalf("unexpected total wait for 361 recoveries: %s", total)
 			}
 			if s.scheduleAutoRetry(errors.New("last status: 429")) {
-				t.Fatal("scheduled more than 115 recoveries")
+				t.Fatal("scheduled more than 361 recoveries")
 			}
 			s.stateMu.Lock()
 			s.autoRetry.policy.maxAttempts++
 			s.stateMu.Unlock()
 			if s.scheduleAutoRetry(errors.New("last status: 429")) {
-				t.Fatal("116th recovery exceeded the cumulative wait budget")
+				t.Fatal("362nd recovery exceeded the cumulative wait budget")
 			}
 		})
 	}
@@ -321,7 +427,7 @@ func TestAutoRetry_ServerMinimumAboveCapStopsWithoutShorteningWait(t *testing.T)
 	s.providerProxy.rememberRetryResponse(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"60"}}})
 	failure := errors.New("last status: 429")
 	if s.scheduleAutoRetry(failure) {
-		t.Fatal("scheduled recovery despite the server minimum exceeding 32 seconds")
+		t.Fatal("scheduled recovery despite the server minimum exceeding 10 seconds")
 	}
 	var detail *core.AgentFailure
 	if !errors.As(s.recoveryFailure(failure), &detail) || detail.RetryAfter != "60 s" || detail.RetryCount != 0 {
@@ -416,17 +522,17 @@ func TestAutoRetry_ClassifiesStructuredAndLegacyFailures(t *testing.T) {
 }
 
 func TestAutoRetry_ConfigurationSurvivesWorkspaceCloning(t *testing.T) {
-	a, err := New(map[string]any{"cmd": "go", "backend": "app_server", "auto_retry_max_attempts": 115, "auto_retry_max_wait_seconds": 3600})
+	a, err := New(map[string]any{"cmd": "go", "backend": "app_server", "auto_retry_max_attempts": 361, "auto_retry_max_wait_seconds": 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, opts := range []map[string]any{a.(*Agent).WorkspaceAgentOptions(), a.(*Agent).WorkspaceAgentOptionSnapshot()} {
 		policy, err := parseAutoRetryPolicy(opts)
-		if err != nil || policy.maxAttempts != 115 || policy.maxWait != time.Hour {
+		if err != nil || policy.maxAttempts != 361 || policy.maxWait != time.Hour {
 			t.Fatalf("workspace lost retry policy: %+v %v", policy, err)
 		}
 	}
-	for _, opts := range []map[string]any{{"auto_retry_max_attempts": -1}, {"auto_retry_max_attempts": 116}, {"auto_retry_max_wait_seconds": 0}, {"auto_retry_max_wait_seconds": 3601}, {"auto_retry_max_attempts": "secret-invalid"}} {
+	for _, opts := range []map[string]any{{"auto_retry_max_attempts": -1}, {"auto_retry_max_attempts": 362}, {"auto_retry_max_wait_seconds": 0}, {"auto_retry_max_wait_seconds": 3601}, {"auto_retry_max_attempts": "secret-invalid"}} {
 		if _, err := parseAutoRetryPolicy(opts); err == nil || strings.Contains(err.Error(), "secret-invalid") {
 			t.Fatal("invalid policy accepted or value leaked")
 		}

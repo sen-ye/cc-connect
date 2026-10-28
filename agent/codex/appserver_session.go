@@ -1281,6 +1281,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "item/completed":
 		var notif itemNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) {
+			s.resetAutoRetryAfterProgress(notif.ThreadID, notif.TurnID, notif.Item)
 			s.handleItemCompleted(notif.Item)
 		}
 
@@ -1915,6 +1916,7 @@ func (s *appServerSession) completeTurn() {
 		s.autoRetry.retire(s.currentTurn)
 	}
 	s.autoRetry.invalidate()
+	s.autoRetry.attempts, s.autoRetry.waited = 0, 0
 	s.currentTurn = ""
 	s.turnRevision++
 	s.stateMu.Unlock()

@@ -24,12 +24,12 @@ type autoRetryPolicy struct {
 }
 
 func parseAutoRetryPolicy(opts map[string]any) (autoRetryPolicy, error) {
-	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 2 * time.Second, maxDelay: 32 * time.Second, jitter: true}
+	p := autoRetryPolicy{maxWait: 10 * time.Minute, baseDelay: 2 * time.Second, maxDelay: 10 * time.Second, jitter: true}
 	for _, setting := range []struct {
 		name string
 		max  int
 	}{
-		{"auto_retry_max_attempts", 115}, {"auto_retry_max_wait_seconds", 3600},
+		{"auto_retry_max_attempts", 361}, {"auto_retry_max_wait_seconds", 3600},
 	} {
 		value, exists := opts[setting.name]
 		if !exists {
@@ -93,6 +93,50 @@ func (r *autoRetryState) isRetired(id string) bool {
 		}
 	}
 	return false
+}
+
+// Only completed, useful output in the current turn proves that recovery
+// resumed real work. Starts, reasoning fragments and echoed input do not.
+func autoRetryConfirmedProgress(item map[string]any) bool {
+	status := strings.ToLower(strings.TrimSpace(appServerItemString(item, "status")))
+	if (status != "" && status != "completed") || item["error"] != nil || item["success"] == false {
+		return false
+	}
+	switch appServerItemType(item) {
+	case "agentMessage":
+		return strings.TrimSpace(appServerAgentMessageText(item)) != ""
+	case "commandExecution":
+		code, known := toInt(appServerItemValue(item, "exitCode", "exit_code"))
+		return status == "completed" && (!known || code == 0)
+	case "mcpToolCall":
+		result, _ := item["result"].(map[string]any)
+		return status == "completed" && result["isError"] != true
+	case "fileChange", "dynamicToolCall":
+		return status == "completed"
+	case "webSearch":
+		return strings.TrimSpace(appServerItemString(item, "query")) != ""
+	default:
+		return false
+	}
+}
+
+func (s *appServerSession) resetAutoRetryAfterProgress(threadID, turnID string, item map[string]any) {
+	if threadID == "" || threadID != s.CurrentSessionID() || turnID == "" || !autoRetryConfirmedProgress(item) {
+		return
+	}
+	s.stateMu.Lock()
+	r := &s.autoRetry
+	if !s.alive.Load() || s.currentTurn != turnID || r.waiting || r.isRetired(turnID) || r.attempts == 0 {
+		s.stateMu.Unlock()
+		return
+	}
+	attempts, waited := r.attempts, r.waited
+	// The new streak can reuse attempt numbers. Invalidate old RPC callbacks
+	// without interrupting the native turn or losing its provider binding.
+	r.invalidate()
+	r.attempts, r.waited = 0, 0
+	s.stateMu.Unlock()
+	slog.Info("codex: recovery progress reset failure streak", "session_id", threadID, "previous_attempts", attempts, "previous_wait", waited)
 }
 
 type codexTurnFailure struct {
