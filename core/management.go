@@ -163,14 +163,15 @@ type GlobalModelEntry struct {
 
 // GlobalCodexConfig holds Codex-specific provider settings for the management API.
 type GlobalCodexConfig struct {
-	WireAPI                 string            `json:"wire_api,omitempty"`
-	HTTPHeaders             map[string]string `json:"http_headers,omitempty"`
-	EnvKey                  string            `json:"env_key,omitempty"`
-	EnvHTTPHeaders          map[string]string `json:"env_http_headers,omitempty"`
-	ProxyURL                string            `json:"proxy_url,omitempty"`
-	ModelCatalogURL         string            `json:"model_catalog_url,omitempty"`
-	MaxOutputTokens         int               `json:"max_output_tokens,omitempty"`
-	ReasoningReplayFallback bool              `json:"reasoning_replay_fallback,omitempty"`
+	WireAPI                     string            `json:"wire_api,omitempty"`
+	HTTPHeaders                 map[string]string `json:"http_headers,omitempty"`
+	EnvKey                      string            `json:"env_key,omitempty"`
+	EnvHTTPHeaders              map[string]string `json:"env_http_headers,omitempty"`
+	ProxyURL                    string            `json:"proxy_url,omitempty"`
+	ModelCatalogURL             string            `json:"model_catalog_url,omitempty"`
+	MaxOutputTokens             int               `json:"max_output_tokens,omitempty"`
+	ReasoningReplayFallback     bool              `json:"reasoning_replay_fallback,omitempty"`
+	MirrorDeveloperInstructions *bool             `json:"mirror_developer_instructions,omitempty"`
 }
 
 func (m *ManagementServer) SetListGlobalProviders(fn func() ([]GlobalProviderInfo, error)) {
@@ -1497,6 +1498,7 @@ func (m *ManagementServer) handleProjectProviders(w http.ResponseWriter, r *http
 			prov.CodexModelCatalogURL = body.Codex.ModelCatalogURL
 			prov.CodexMaxOutputTokens = body.Codex.MaxOutputTokens
 			prov.CodexReasoningReplayFallback = body.Codex.ReasoningReplayFallback
+			prov.CodexMirrorDeveloperInstructions = body.Codex.MirrorDeveloperInstructions
 		}
 		if e.providerAddSaveFunc != nil {
 			if err := e.providerAddSaveFunc(prov); err != nil {

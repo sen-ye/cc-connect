@@ -39,7 +39,7 @@ api-key = "GATEWAY_API_KEY"
 该代理直接连接网关，不继承 cc-connect 的公司 HTTP 代理。配置里的查询参数和请求
 认证头会保留，不需要把 key 写入 URL 或启动参数。
 
-未启用输出预算时，第一份请求始终原样发送。仅当 `POST .../responses` 返回 HTTP 400，
+输出预算和模型指令补充均未启用时，第一份请求始终原样发送。仅当 `POST .../responses` 返回 HTTP 400，
 错误含 `invalid_encrypted_content`，且请求中确有可清理的 reasoning 项时，代理才补发一次。
 与 Maso Python 客户端一致，还识别 `Conflicting authenticated continuation identities`，
 但此时必须确认请求里存在 `reasoning.encrypted_content`。补发时：
@@ -119,6 +119,63 @@ Maso 在 `packages/utils/src/maso_utils/providers.py` 中通过带 Bearer 认证
 模型配置中的 high/xhigh/max 项是同一 model ID 的不同预设。本机 Seed 仅列出
 `gpt-6-astra` 和 `es1-grape-g61s`。后者的本地 CLI 元数据基于现有 GPT-6.1 Sol
 模板，实际请求保留 `es1-grape-g61s` 名称，不构成网关能力或上下文上限保证。
+
+## 给 Responses 补充客户端模型指令
+
+原生 Codex 的部分版本把模型基础指令放在 `input` 的首条 developer 消息中，
+不发送顶层 `instructions`。已配置的 provider 默认补充；需要保留上游原行为的
+provider（例如本机 OpenAI 官方入口）可显式关闭：
+
+```toml
+[projects.agent.providers.codex]
+mirror_developer_instructions = false
+```
+
+默认开启。只有普通 `POST .../responses` 请求的 `instructions` 缺失、
+null 或空白时，才把首条 developer **消息**的纯文本复制到顶层。`additional_tools`
+声明不作为消息；原历史、工具定义、call ID、加密 reasoning、缓存标识均保留。
+显式指令和非法字段值保持不变，后者仍由上游校验。没有合适的首条 developer 消息、
+混合非文本内容、超过 1 MiB 的指令或超过 32 MiB 的请求不补写；不修改压缩请求、
+模型目录或 `/responses/compact`。
+
+该方法使用客户端为当前模型选择的指令，而非按名字猜测或给所有模型套 Astra 模板。
+它会重复放置这段指令，改变模型有效输入和 token 计量；不等同于已验证的能力提升。
+cc-connect 的 `system_prompt` 是用户消息前导，并不等同于这个 Responses 字段。
+显式 false 会在配置保存、管理 API 和工作区复制时保留；这些设置会随 provider 继承到工作区，也适用于 `codex-provider` / `codex-seed` 启动器。
+
+### 独立本地转发，覆盖普通 Codex CLI
+
+不经 cc-connect 启动的客户端也可以使用相同代理。建立一个不含凭据的配置：
+
+```toml
+[provider]
+name = "aidp"
+base_url = "https://aidp.bytedance.net/api/modelhub/online"
+model = "gpt-6-astra"
+[provider.codex]
+mirror_developer_instructions = true
+```
+
+```bash
+codex-provider --config ./aidp-proxy.toml --listen 127.0.0.1:19617
+```
+
+客户端的 provider `base_url` 指向启动时输出的本地 URL，其原有鉴权、`extra.session_id`、
+缓存设置仍由客户端发送。服务只允许 loopback 监听，不读取/替换客户端凭据；服务模式
+拒绝配置 API key、env_key、固定请求头或环境变量。`GET /_cc_connect_health` 可检查进程。
+SSE 正文和端到端响应头直接转发，429 / Retry-After 不改写成别的错误码。
+这不会延长 ModelHub 的账号粘性或厂商缓存寿命，也不能保证跨账号解密。
+
+本机的 `ensure-codex-proxies`（源码 `tools/ensure_codex_proxies.py`）按
+`~/.config/codex-provider/services.json` 幂等启动独立 tmux 服务；`--check` 只检查健康。
+健康检查核对服务名称；不会替换已有但不健康的会话，也不会自动切换上游。
+启动器在 tmux pane 内清空继承环境，鉴权始终由每个 HTTP 请求携带。
+普通 `codex` wrapper 与机器启动脚本调用此辅助程序，relay 生命周期独立于 cc-connect。
+`codex-seed` 仍使用自己的进程内代理；Mojo 在其网关的
+`upstreams.mojo-native.mirror_developer_instructions` 配置对应功能。
+
+本次四个入口的实测、Sub2API 模板来源与上线范围见
+[provider 指令对照](incidents/2026-10-28-provider-instructions.md)。
 
 ## 临时故障后的自动续跑
 

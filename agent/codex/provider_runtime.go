@@ -48,11 +48,12 @@ func prepareProviderRuntime(provider *core.ProviderConfig, extraEnv []string) (p
 		return cfg, nil
 	}
 	cfg.baseURL = provider.BaseURL
-	if provider.CodexProxyURL != "" || provider.CodexReasoningReplayFallback || provider.CodexMaxOutputTokens != 0 {
+	if provider.CodexProxyURL != "" || provider.CodexReasoningReplayFallback || provider.CodexMaxOutputTokens != 0 || provider.MirrorsCodexDeveloperInstructions() {
 		var err error
 		cfg.proxy, cfg.baseURL, err = newProviderProxyWithOptions(provider.BaseURL, provider.CodexProxyURL, providerProxyOptions{
 			ModelCatalogURL: provider.CodexModelCatalogURL, ReasoningReplayFallback: provider.CodexReasoningReplayFallback,
 			MaxOutputTokens: provider.CodexMaxOutputTokens, ProviderName: provider.Name,
+			MirrorDeveloperInstructions: provider.MirrorsCodexDeveloperInstructions(),
 		})
 		if err != nil {
 			return cfg, err
@@ -133,6 +134,10 @@ func tomlString(value string) string {
 }
 
 func cloneProvider(provider core.ProviderConfig) core.ProviderConfig {
+	if provider.CodexMirrorDeveloperInstructions != nil {
+		value := *provider.CodexMirrorDeveloperInstructions
+		provider.CodexMirrorDeveloperInstructions = &value
+	}
 	provider.Env = maps.Clone(provider.Env)
 	provider.CodexHTTPHeaders = maps.Clone(provider.CodexHTTPHeaders)
 	provider.CodexEnvHTTPHeaders = maps.Clone(provider.CodexEnvHTTPHeaders)

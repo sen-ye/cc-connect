@@ -49,6 +49,7 @@ models = [{model="gpt-6-astra"}, {model="es1-grape-g61s"}]
 wire_api = "responses"
 reasoning_replay_fallback = true
 max_output_tokens = 64000
+mirror_developer_instructions = true
 [provider.codex.env_http_headers]
 api-key = "SEED_TEST_KEY"
 `
@@ -60,7 +61,7 @@ api-key = "SEED_TEST_KEY"
 		t.Fatal(err)
 	}
 	p := nativeProvider(cfg.Provider)
-	if !p.CodexReasoningReplayFallback || p.CodexMaxOutputTokens != 64000 || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
+	if !p.CodexReasoningReplayFallback || p.CodexMaxOutputTokens != 64000 || !p.MirrorsCodexDeveloperInstructions() || p.CodexEnvHTTPHeaders["api-key"] != "SEED_TEST_KEY" || p.Name != "Seed" {
 		t.Fatal("provider recovery/auth config lost")
 	}
 	before, _ := os.ReadFile(file)
@@ -100,5 +101,37 @@ func TestRestoringSession_PreservesSavedModel(t *testing.T) {
 	}
 	if restoringSession([]string{"--", "resume"}) || restoringSession([]string{"exec", "hello"}) {
 		t.Fatal("prompt treated as restore command")
+	}
+}
+
+func TestServeModeDoesNotStartNativeCLIOrAcceptLauncherCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.toml")
+	source := `binary = "/this-native-binary-must-not-run"
+[provider]
+name = "test"
+base_url = "http://127.0.0.1:1"
+model = "gpt-6-astra"
+[provider.codex]
+mirror_developer_instructions = true
+`
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, stderr bytes.Buffer
+	if code := run(ctx, []string{"--config", path, "--listen", "127.0.0.1:0"}, strings.NewReader(""), &out, &stderr); code != 0 || !strings.Contains(out.String(), `"listening":"http://127.0.0.1:`) {
+		t.Fatalf("serve failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if code := run(ctx, []string{"--config", path, "--listen", "127.0.0.1:0", "--", "exec", "hello"}, strings.NewReader(""), &out, &stderr); code != 2 {
+		t.Fatal("serve accepted native arguments")
+	}
+	if err := os.WriteFile(path, []byte(source+`env_key = "PRIVATE_KEY_SOURCE"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := run(ctx, []string{"--config", path, "--listen", "127.0.0.1:0"}, strings.NewReader(""), &out, &stderr); code == 0 || out.Len() != 0 || strings.Contains(stderr.String(), "PRIVATE_KEY_SOURCE") {
+		t.Fatal("serve accepted launcher credentials or disclosed their source")
 	}
 }

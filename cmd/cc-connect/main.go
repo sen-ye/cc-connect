@@ -1976,6 +1976,7 @@ func configProviderToCore(p config.ProviderConfig) core.ProviderConfig {
 		c.CodexModelCatalogURL = p.Codex.ModelCatalogURL
 		c.CodexMaxOutputTokens = p.Codex.MaxOutputTokens
 		c.CodexReasoningReplayFallback = p.Codex.ReasoningReplayFallback
+		c.CodexMirrorDeveloperInstructions = p.Codex.MirrorDeveloperInstructions
 	}
 	return c
 }
@@ -1988,14 +1989,15 @@ func coreProviderToConfig(p core.ProviderConfig) config.ProviderConfig {
 		Model: p.Model, Models: convertCoreModels(p.Models), Thinking: p.Thinking, Env: p.Env,
 		SettingsFile: p.SettingsFile,
 	}
-	if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" || p.CodexMaxOutputTokens != 0 || p.CodexReasoningReplayFallback {
+	if p.CodexWireAPI != "" || len(p.CodexHTTPHeaders) > 0 || p.CodexEnvKey != "" || len(p.CodexEnvHTTPHeaders) > 0 || p.CodexProxyURL != "" || p.CodexModelCatalogURL != "" || p.CodexMaxOutputTokens != 0 || p.CodexReasoningReplayFallback || p.CodexMirrorDeveloperInstructions != nil {
 		c.Codex = &config.CodexProviderConfig{
 			WireAPI: p.CodexWireAPI, HTTPHeaders: p.CodexHTTPHeaders,
 			EnvKey: p.CodexEnvKey, EnvHTTPHeaders: p.CodexEnvHTTPHeaders,
-			ProxyURL:                p.CodexProxyURL,
-			ModelCatalogURL:         p.CodexModelCatalogURL,
-			MaxOutputTokens:         p.CodexMaxOutputTokens,
-			ReasoningReplayFallback: p.CodexReasoningReplayFallback,
+			ProxyURL:                    p.CodexProxyURL,
+			ModelCatalogURL:             p.CodexModelCatalogURL,
+			MaxOutputTokens:             p.CodexMaxOutputTokens,
+			ReasoningReplayFallback:     p.CodexReasoningReplayFallback,
+			MirrorDeveloperInstructions: p.CodexMirrorDeveloperInstructions,
 		}
 	}
 	return c
@@ -2084,14 +2086,15 @@ func configProviderToGlobal(p config.ProviderConfig) core.GlobalProviderInfo {
 	}
 	if p.Codex != nil {
 		info.Codex = &core.GlobalCodexConfig{
-			WireAPI:                 p.Codex.WireAPI,
-			HTTPHeaders:             p.Codex.HTTPHeaders,
-			EnvKey:                  p.Codex.EnvKey,
-			EnvHTTPHeaders:          p.Codex.EnvHTTPHeaders,
-			ProxyURL:                p.Codex.ProxyURL,
-			ModelCatalogURL:         p.Codex.ModelCatalogURL,
-			MaxOutputTokens:         p.Codex.MaxOutputTokens,
-			ReasoningReplayFallback: p.Codex.ReasoningReplayFallback,
+			WireAPI:                     p.Codex.WireAPI,
+			HTTPHeaders:                 p.Codex.HTTPHeaders,
+			EnvKey:                      p.Codex.EnvKey,
+			EnvHTTPHeaders:              p.Codex.EnvHTTPHeaders,
+			ProxyURL:                    p.Codex.ProxyURL,
+			ModelCatalogURL:             p.Codex.ModelCatalogURL,
+			MaxOutputTokens:             p.Codex.MaxOutputTokens,
+			ReasoningReplayFallback:     p.Codex.ReasoningReplayFallback,
+			MirrorDeveloperInstructions: p.Codex.MirrorDeveloperInstructions,
 		}
 	}
 	return info
@@ -2125,14 +2128,15 @@ func globalProviderToConfig(info core.GlobalProviderInfo) config.ProviderConfig 
 	}
 	if info.Codex != nil {
 		p.Codex = &config.CodexProviderConfig{
-			WireAPI:                 info.Codex.WireAPI,
-			HTTPHeaders:             info.Codex.HTTPHeaders,
-			EnvKey:                  info.Codex.EnvKey,
-			EnvHTTPHeaders:          info.Codex.EnvHTTPHeaders,
-			ProxyURL:                info.Codex.ProxyURL,
-			ModelCatalogURL:         info.Codex.ModelCatalogURL,
-			MaxOutputTokens:         info.Codex.MaxOutputTokens,
-			ReasoningReplayFallback: info.Codex.ReasoningReplayFallback,
+			WireAPI:                     info.Codex.WireAPI,
+			HTTPHeaders:                 info.Codex.HTTPHeaders,
+			EnvKey:                      info.Codex.EnvKey,
+			EnvHTTPHeaders:              info.Codex.EnvHTTPHeaders,
+			ProxyURL:                    info.Codex.ProxyURL,
+			ModelCatalogURL:             info.Codex.ModelCatalogURL,
+			MaxOutputTokens:             info.Codex.MaxOutputTokens,
+			ReasoningReplayFallback:     info.Codex.ReasoningReplayFallback,
+			MirrorDeveloperInstructions: info.Codex.MirrorDeveloperInstructions,
 		}
 	}
 	return p

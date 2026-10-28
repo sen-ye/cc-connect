@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,16 +25,19 @@ type providerProxy struct {
 	once      sync.Once
 	retryMu   sync.Mutex
 	retryHint providerRetryHint
+	done      chan error
 }
 
 const providerCatalogPath = "/_cc_connect_models"
 
 type providerProxyOptions struct {
-	ModelCatalogURL         string
-	ReasoningReplayFallback bool
-	MaxOutputTokens         int
-	ProviderName            string
-	observeResponse         func(*http.Response)
+	ModelCatalogURL             string
+	ReasoningReplayFallback     bool
+	MaxOutputTokens             int
+	MirrorDeveloperInstructions bool
+	ListenAddress               string // empty selects a private ephemeral listener
+	ProviderName                string
+	observeResponse             func(*http.Response)
 }
 
 func newProviderProxy(baseURL, proxyURL string, catalogURLs ...string) (*providerProxy, string, error) {
@@ -56,7 +60,7 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 		return nil, "", fmt.Errorf("codex: provider base_url must be an absolute HTTP(S) URL")
 	}
 	var upstreamProxy *url.URL
-	if proxyURL != "" || (!options.ReasoningReplayFallback && options.MaxOutputTokens == 0) {
+	if proxyURL != "" || (!options.ReasoningReplayFallback && options.MaxOutputTokens == 0 && !options.MirrorDeveloperInstructions && options.ListenAddress == "") {
 		upstreamProxy, err = parseProviderProxyURL(proxyURL)
 		if err != nil {
 			return nil, "", fmt.Errorf("codex: provider proxy_url must be an absolute HTTP(S) URL")
@@ -69,7 +73,14 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 			return nil, "", fmt.Errorf("codex: model_catalog_url must be an absolute HTTP(S) URL")
 		}
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	address := "127.0.0.1:0"
+	if options.ListenAddress != "" {
+		address = options.ListenAddress
+		if err := validateProviderListenAddress(address); err != nil {
+			return nil, "", err
+		}
+	}
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, "", fmt.Errorf("codex: listen for provider proxy: %w", err)
 	}
@@ -80,14 +91,29 @@ func newProviderProxyWithOptions(baseURL, proxyURL string, options providerProxy
 	if upstreamProxy != nil {
 		transport.Proxy = http.ProxyURL(upstreamProxy)
 	}
-	p := &providerProxy{transport: transport}
+	p := &providerProxy{transport: transport, done: make(chan error, 1)}
 	options.observeResponse = p.rememberRetryResponse
 	handler := providerProxyHandler(target, catalog, transport, options)
+	if options.ListenAddress != "" {
+		forward := handler
+		health, _ := json.Marshal(map[string]any{"ok": true, "service": "codex-provider", "provider": options.ProviderName})
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/_cc_connect_health" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(health)
+				return
+			}
+			forward.ServeHTTP(w, r)
+		})
+	}
 	p.server = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		err := p.server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
 			slog.Error("codex: provider proxy stopped", "error", err)
 		}
+		p.done <- err
+		close(p.done)
 	}()
 	return p, "http://" + listener.Addr().String(), nil
 }
@@ -100,8 +126,8 @@ func providerProxyHandler(target, catalog *url.URL, transport *http.Transport, o
 	if options.ReasoningReplayFallback {
 		reverse.Transport = &reasoningReplayTransport{base: transport}
 	}
-	if options.MaxOutputTokens > 0 {
-		reverse.Transport = &providerOutputLimitTransport{base: reverse.Transport, limit: options.MaxOutputTokens}
+	if options.MaxOutputTokens > 0 || options.MirrorDeveloperInstructions {
+		reverse.Transport = &providerRequestDefaultsTransport{base: reverse.Transport, limit: options.MaxOutputTokens, mirrorDeveloper: options.MirrorDeveloperInstructions}
 	}
 	reverse.ModifyResponse = func(response *http.Response) error {
 		logProviderHTTPFailure(response, options.ProviderName, target.Hostname())

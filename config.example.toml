@@ -1741,6 +1741,11 @@ app_secret = "your-feishu-app-secret"
 # Backoff: 2, 4, 8, 10, 10… seconds; jitter also stays within 10 seconds.
 # Confirmed progress resets attempts and wait; starts and partial output do not.
 # 退避含抖动不超过 10 秒；确认恢复并正常推进后清零，详细规则见 docs/codex-session-providers.md。
+# Codex provider instructions supplementation is enabled by default.
+# 默认补充 Codex provider 的 instructions；可在单个 provider 上关闭：
+# mirror_developer_instructions = false # preserve an upstream that supplies its own instructions
+# This belongs in the provider's codex block, not projects.agent.options.
+# 此项属于 provider 的 codex 配置块；不是 projects.agent.options 字段。
 #
 # Optional: project system prompt / 可选：项目系统提示
 # Codex has no native system-prompt flag, so cc-connect injects this as a

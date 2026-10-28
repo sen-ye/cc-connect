@@ -37,6 +37,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags := flag.NewFlagSet("codex-provider", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	path := flags.String("config", "", "launcher TOML file; pass native Codex arguments after --")
+	listen := flags.String("listen", "", "serve the provider proxy on a loopback address instead of starting Codex")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -44,6 +45,20 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 2
 	}
 	cfg, err := loadLauncherConfig(*path)
+	if err == nil && *listen != "" {
+		if len(flags.Args()) != 0 {
+			fmt.Fprintln(stderr, "codex-provider: --listen does not accept native CLI arguments")
+			return 2
+		}
+		err = codex.ServeProviderProxy(ctx, *listen, nativeProvider(cfg.Provider), func(address string) error {
+			return json.NewEncoder(stdout).Encode(map[string]string{"listening": address, "provider": cfg.Provider.Name})
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if err == nil {
 		err = validateNativeArgs(flags.Args(), cfg.Provider)
 	}
@@ -106,6 +121,7 @@ func nativeProvider(p config.ProviderConfig) core.ProviderConfig {
 		out.CodexHTTPHeaders, out.CodexEnvHTTPHeaders = c.HTTPHeaders, c.EnvHTTPHeaders
 		out.CodexReasoningReplayFallback = c.ReasoningReplayFallback
 		out.CodexMaxOutputTokens = c.MaxOutputTokens
+		out.CodexMirrorDeveloperInstructions = c.MirrorDeveloperInstructions
 	}
 	return out
 }

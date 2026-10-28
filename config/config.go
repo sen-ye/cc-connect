@@ -615,6 +615,8 @@ type CodexProviderConfig struct {
 	EnvHTTPHeaders  map[string]string `toml:"env_http_headers,omitempty" json:"env_http_headers,omitempty"`
 	// A cc-connect request default, not a native Codex provider field; 0 disables injection.
 	MaxOutputTokens int `toml:"max_output_tokens,omitzero" json:"max_output_tokens,omitempty"`
+	// Nil enables supplementation using the current client/model prompt; false explicitly disables it.
+	MirrorDeveloperInstructions *bool `toml:"mirror_developer_instructions,omitempty" json:"mirror_developer_instructions,omitempty"`
 	// A cc-connect request-recovery option, not a native Codex provider field.
 	ReasoningReplayFallback bool `toml:"reasoning_replay_fallback,omitempty" json:"reasoning_replay_fallback,omitempty"`
 }
@@ -2963,6 +2965,10 @@ func cloneAgentConfig(in AgentConfig) AgentConfig {
 			}
 			if in.Providers[i].Codex != nil {
 				codex := *in.Providers[i].Codex
+				if codex.MirrorDeveloperInstructions != nil {
+					value := *codex.MirrorDeveloperInstructions
+					codex.MirrorDeveloperInstructions = &value
+				}
 				codex.HTTPHeaders = cloneStringMap(codex.HTTPHeaders)
 				codex.EnvHTTPHeaders = cloneStringMap(codex.EnvHTTPHeaders)
 				p.Codex = &codex

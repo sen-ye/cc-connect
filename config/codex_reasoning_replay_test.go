@@ -18,6 +18,7 @@ base_url = "https://router.example/responses/openai?api-version=2024-03-01-previ
 wire_api = "responses"
 reasoning_replay_fallback = true
 max_output_tokens = 64000
+mirror_developer_instructions = true
 [providers.codex.env_http_headers]
 api-key = "SEED_PROXY_TEST_KEY"
 
@@ -33,7 +34,7 @@ provider_refs = ["Seed"]
 	}
 	cfg.ResolveProviderRefs()
 	provider := cfg.Projects[0].Agent.Providers[0]
-	if provider.Codex == nil || !provider.Codex.ReasoningReplayFallback || provider.Codex.MaxOutputTokens != 64000 || provider.APIKey != "" {
+	if provider.Codex == nil || !provider.Codex.ReasoningReplayFallback || provider.Codex.MaxOutputTokens != 64000 || (provider.Codex.MirrorDeveloperInstructions == nil || !*provider.Codex.MirrorDeveloperInstructions) || provider.APIKey != "" {
 		t.Fatal("provider reference lost its opt-in or materialized a credential")
 	}
 	var encoded strings.Builder
@@ -93,8 +94,9 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 		WireAPI: "responses", EnvKey: "PROVIDER_ENV_KEY",
 		ProxyURL: "http://proxy.example:8118", ModelCatalogURL: "https://router.example/models?api-version=v1",
 		HTTPHeaders: map[string]string{"X-Test": "original"}, EnvHTTPHeaders: map[string]string{"api-key": "PROVIDER_ENV_KEY"},
-		ReasoningReplayFallback: true,
-		MaxOutputTokens:         64000,
+		ReasoningReplayFallback:     true,
+		MaxOutputTokens:             64000,
+		MirrorDeveloperInstructions: mirrorInstructionsValue(true),
 	}
 	source := AgentConfig{Type: "codex", Providers: []ProviderConfig{{Name: "Seed", Codex: settings}}}
 	cloned := cloneAgentConfig(source)
@@ -106,7 +108,26 @@ func TestCloneAgentConfig_PreservesCodexRoutingAndRecovery(t *testing.T) {
 	got.EnvHTTPHeaders["api-key"] = "OTHER_ENV_KEY"
 	got.ReasoningReplayFallback = false
 	got.MaxOutputTokens = 32000
-	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback || settings.MaxOutputTokens != 64000 {
+	*got.MirrorDeveloperInstructions = false
+	if settings.HTTPHeaders["X-Test"] != "original" || settings.EnvHTTPHeaders["api-key"] != "PROVIDER_ENV_KEY" || !settings.ReasoningReplayFallback || settings.MaxOutputTokens != 64000 || !*settings.MirrorDeveloperInstructions {
 		t.Fatal("cloned project mutated the source provider configuration")
+	}
+}
+
+func mirrorInstructionsValue(value bool) *bool { return &value }
+
+func TestCodexInstructions_OfficialOptOutSurvivesTOML(t *testing.T) {
+	for _, setting := range []*bool{nil, mirrorInstructionsValue(false), mirrorInstructionsValue(true)} {
+		var encoded strings.Builder
+		if err := toml.NewEncoder(&encoded).Encode(CodexProviderConfig{MirrorDeveloperInstructions: setting}); err != nil {
+			t.Fatal(err)
+		}
+		var decoded CodexProviderConfig
+		if _, err := toml.Decode(encoded.String(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded.MirrorDeveloperInstructions, setting) {
+			t.Fatal("TOML lost the distinction between a default and an explicit instructions exception")
+		}
 	}
 }

@@ -457,15 +457,22 @@ type ProviderConfig struct {
 	Env          map[string]string // arbitrary extra env vars (e.g. CLAUDE_CODE_USE_BEDROCK=1)
 	SettingsFile string            // optional per-provider CLI settings overlay (Claude Code)
 	// Codex-specific provider config (maps to Codex model_providers.<name>)
-	CodexWireAPI         string            // wire API format (e.g. "responses")
-	CodexHTTPHeaders     map[string]string // custom HTTP headers
-	CodexEnvKey          string            // environment variable containing the API key
-	CodexEnvHTTPHeaders  map[string]string // HTTP header name -> environment variable
-	CodexProxyURL        string            // optional fixed HTTP(S) network proxy for this provider
-	CodexModelCatalogURL string            // optional full URL of the Codex-native model catalog
-	CodexMaxOutputTokens int               // optional Responses output limit when a request omits it; 0 disables injection
+	CodexWireAPI                     string            // wire API format (e.g. "responses")
+	CodexHTTPHeaders                 map[string]string // custom HTTP headers
+	CodexEnvKey                      string            // environment variable containing the API key
+	CodexEnvHTTPHeaders              map[string]string // HTTP header name -> environment variable
+	CodexProxyURL                    string            // optional fixed HTTP(S) network proxy for this provider
+	CodexModelCatalogURL             string            // optional full URL of the Codex-native model catalog
+	CodexMaxOutputTokens             int               // optional Responses output limit when a request omits it; 0 disables injection
+	CodexMirrorDeveloperInstructions *bool             // nil enables the default; false opts out of local instructions supplementation
 	// Opt in to one lossy retry when a Responses endpoint rejects encrypted reasoning.
 	CodexReasoningReplayFallback bool
+}
+
+// MirrorsCodexDeveloperInstructions defaults to true unless a provider explicitly
+// disables local supplementation (for example, an upstream that already does it).
+func (p ProviderConfig) MirrorsCodexDeveloperInstructions() bool {
+	return p.CodexMirrorDeveloperInstructions == nil || *p.CodexMirrorDeveloperInstructions
 }
 
 // ProviderSwitcher is an optional interface for agents that support multiple API providers.

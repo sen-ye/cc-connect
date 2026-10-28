@@ -12,22 +12,22 @@ import (
 	"time"
 )
 
-// Like Maso's CLI proxy, fill an absent output budget on Responses requests.
-// Do not replace an explicit budget or touch compaction/catalog/ChatCompletions.
-// This only bounds requested output; it is not a TPM quota or a billing limit.
-type providerOutputLimitTransport struct {
-	base  http.RoundTripper
-	limit int
+// Supply configured defaults on Responses requests. Explicit caller values and
+// compaction/catalog/ChatCompletions payloads retain their original semantics.
+type providerRequestDefaultsTransport struct {
+	base            http.RoundTripper
+	limit           int
+	mirrorDeveloper bool
 }
 
-func (t *providerOutputLimitTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t *providerRequestDefaultsTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	encoding := strings.TrimSpace(request.Header.Get("Content-Encoding"))
 	if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/responses") ||
 		request.Body == nil || request.ContentLength > maxReplayRequestBytes ||
 		(encoding != "" && !strings.EqualFold(encoding, "identity")) {
 		return t.base.RoundTrip(request)
 	}
-	// Only opt-in requests are buffered. Bound memory and preserve an oversized
+	// Only requests using these defaults are buffered. Bound memory and preserve an oversized
 	// stream by concatenating the consumed prefix with the unread remainder.
 	prefix, err := io.ReadAll(io.LimitReader(request.Body, maxReplayRequestBytes+1))
 	if err != nil {
@@ -39,7 +39,14 @@ func (t *providerOutputLimitTransport) RoundTrip(request *http.Request) (*http.R
 	if len(prefix) > maxReplayRequestBytes {
 		return t.base.RoundTrip(outgoing)
 	}
-	rewritten, changed := injectProviderOutputLimit(prefix, t.limit)
+	rewritten, changed := prefix, false
+	if t.mirrorDeveloper {
+		rewritten, changed = mirrorDeveloperInstructions(rewritten)
+	}
+	if t.limit > 0 {
+		withLimit, limitChanged := injectProviderOutputLimit(rewritten, t.limit)
+		rewritten, changed = withLimit, changed || limitChanged
+	}
 	if !changed {
 		return t.base.RoundTrip(outgoing)
 	}

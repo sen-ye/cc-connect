@@ -18,12 +18,13 @@ func TestCodexReasoningReplayFallback_ProjectAndGlobalRoundTrip(t *testing.T) {
 			WireAPI: "responses", EnvKey: "SEED_PROXY_TEST_KEY",
 			HTTPHeaders: map[string]string{"X-Test": "metadata"}, EnvHTTPHeaders: map[string]string{"api-key": "SEED_PROXY_TEST_KEY"},
 			ProxyURL: "http://proxy.example:8118", ModelCatalogURL: "https://router.example/models?api-version=v1",
-			ReasoningReplayFallback: true,
-			MaxOutputTokens:         64000,
+			ReasoningReplayFallback:     true,
+			MaxOutputTokens:             64000,
+			MirrorDeveloperInstructions: mirrorInstructionsValue(true),
 		},
 	}
 	runtime := configProviderToCore(want)
-	if !runtime.CodexReasoningReplayFallback || runtime.CodexMaxOutputTokens != 64000 {
+	if !runtime.CodexReasoningReplayFallback || runtime.CodexMaxOutputTokens != 64000 || !runtime.MirrorsCodexDeveloperInstructions() {
 		t.Fatal("agent wiring lost the recovery opt-in")
 	}
 	if got := coreProviderToConfig(runtime); !reflect.DeepEqual(got, want) {
@@ -85,5 +86,32 @@ func TestCodexMaxOutputTokens_StandaloneAndDefaultMappings(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "max_output_tokens") {
 		t.Fatal("disabled output injection should remain omitted from management JSON")
+	}
+}
+
+func mirrorInstructionsValue(value bool) *bool { return &value }
+
+func TestCodexInstructions_DefaultAndOfficialOptOutSurviveMappings(t *testing.T) {
+	for _, setting := range []*bool{nil, mirrorInstructionsValue(true), mirrorInstructionsValue(false)} {
+		want := config.ProviderConfig{Name: "profile", Codex: &config.CodexProviderConfig{MirrorDeveloperInstructions: setting}}
+		runtime := configProviderToCore(want)
+		if runtime.MirrorsCodexDeveloperInstructions() != (setting == nil || *setting) {
+			t.Fatal("provider instructions default or explicit exception was lost")
+		}
+		for _, got := range []config.ProviderConfig{coreProviderToConfig(runtime), globalProviderToConfig(configProviderToGlobal(want))} {
+			if setting != nil && (got.Codex == nil || got.Codex.MirrorDeveloperInstructions == nil || *got.Codex.MirrorDeveloperInstructions != *setting) {
+				t.Fatal("explicit provider instructions exception was lost in persistence")
+			}
+		}
+	}
+	if !configProviderToCore(config.ProviderConfig{Name: "new-provider"}).MirrorsCodexDeveloperInstructions() {
+		t.Fatal("new providers should supplement instructions by default")
+	}
+	flag := false
+	official := configProviderToCore(config.ProviderConfig{Name: "OpenAI", Codex: &config.CodexProviderConfig{MirrorDeveloperInstructions: &flag}})
+	stored := coreProviderToConfig(official)
+	raw, err := json.Marshal(stored)
+	if err != nil || !strings.Contains(string(raw), `"mirror_developer_instructions":false`) || official.MirrorsCodexDeveloperInstructions() {
+		t.Fatal("official provider must retain its explicit local supplementation opt-out")
 	}
 }
