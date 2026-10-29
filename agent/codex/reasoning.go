@@ -45,9 +45,16 @@ type reasoningMetadataCache struct {
 	Data    reasoningMetadata
 }
 
-func (a *Agent) modelReasoningEfforts() []string {
+func (a *Agent) ReasoningEffortsForModel(model string) []string {
+	return a.modelReasoningEfforts(model)
+}
+
+func (a *Agent) modelReasoningEfforts(override ...string) []string {
 	a.mu.Lock()
 	model := core.GetProviderModel(a.providers, a.activeIdx, a.model)
+	if len(override) > 0 {
+		model = override[0]
+	}
 	opts := reasoningMetadataOptions{Cmd: a.cmd, Args: append([]string(nil), a.cliExtraArgs...), Dir: a.workDir}
 	opts.Env = append(opts.Env, a.configEnv...)
 	opts.Env = append(opts.Env, a.providerEnvLocked()...)

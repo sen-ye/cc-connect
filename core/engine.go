@@ -10474,7 +10474,7 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 			models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, msg.SessionKey)
 
 			var sb strings.Builder
-			current := switcher.GetModel()
+			current := sessionModelName(agent, sessions.GetOrCreateActive(msg.SessionKey))
 			if current == "" {
 				sb.WriteString(e.i18n.T(MsgModelDefault))
 			} else {
@@ -10541,7 +10541,7 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		target = resolveModelSwitchTarget(target, models)
 	}
 
-	target, err = e.switchModelOnAgent(agent, target, agent == e.agent)
+	target, err = e.switchSessionModel(agent, sessions, msg.SessionKey, target)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeFailed, err))
 		return
@@ -10682,7 +10682,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
+	efforts := sessionReasoningEfforts(agent, sessions.GetOrCreateActive(msg.SessionKey))
 	if len(efforts) == 0 {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
 		return
@@ -10726,7 +10726,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(agent))
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(agent, msg.SessionKey))
 		return
 	}
 
@@ -12941,7 +12941,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
 		agent, _ := e.sessionContextForKey(sessionKey)
-		return e.renderReasoningCard(agent)
+		return e.renderReasoningCard(agent, sessionKey)
 	case "/mode":
 		return e.renderModeCard()
 	case "/lang":
@@ -13032,7 +13032,7 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 		cancel()
 	}
 
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+	resolved, err := e.switchSessionModel(agent, sessions, sessionKey, target)
 	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 	if err == nil {
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
@@ -13046,6 +13046,9 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 }
 
 func (e *Engine) persistWorkspaceModelOverride(interactiveKey, sessionKey string, agent Agent, model string) {
+	if _, scoped := agent.(SessionModelStarter); scoped {
+		return
+	}
 	if e.projectState == nil || !e.multiWorkspace || model == "" {
 		return
 	}
@@ -13129,7 +13132,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if !ok {
 			return
 		}
-		efforts := switcher.AvailableReasoningEfforts()
+		efforts := sessionReasoningEfforts(agent, sessions.GetOrCreateActive(sessionKey))
 		target := strings.ToLower(strings.TrimSpace(args))
 		if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
 			target = efforts[idx-1]
@@ -13657,7 +13660,7 @@ func (e *Engine) pushDeleteModeResultCard(sessionKey string) {
 }
 
 func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveState, agent Agent, sessions *SessionManager, target string) {
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+	resolved, err := e.switchSessionModel(agent, sessions, sessionKey, target)
 	if err == nil {
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
@@ -13900,7 +13903,7 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 	fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
 	defer cancel()
 	models := sessionAvailableModels(fetchCtx, agent, switcher, sessions, sessionKey)
-	current := switcher.GetModel()
+	current := sessionModelName(agent, sessions.GetOrCreateActive(sessionKey))
 
 	var sb strings.Builder
 	if current == "" {
@@ -13955,13 +13958,18 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard(agent Agent) *Card {
+func (e *Engine) renderReasoningCard(agent Agent, sessionKeys ...string) *Card {
 	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
+	var session *Session
+	if len(sessionKeys) > 0 {
+		_, sessions := e.sessionContextForKey(sessionKeys[0])
+		session = sessions.GetOrCreateActive(sessionKeys[0])
+	}
+	efforts := sessionReasoningEfforts(agent, session)
 	if len(efforts) == 0 {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}

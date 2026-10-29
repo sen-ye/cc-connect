@@ -493,6 +493,25 @@ type SessionProviderStarter interface {
 	StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (AgentSession, error)
 }
 
+// SessionModelStarter applies an explicit model to one conversation without
+// changing provider defaults or another conversation's next startup.
+type SessionModelStarter interface {
+	SessionProviderStarter
+	StartSessionWithModel(ctx context.Context, sessionID, providerName, model string) (AgentSession, error)
+	ModelForProvider(providerName string) string
+}
+
+// ModelReasoningEffortProvider describes the model selected by a conversation.
+type ModelReasoningEffortProvider interface {
+	ReasoningEffortsForModel(model string) []string
+}
+
+// SessionServiceTierDefault supplies the default when a conversation has no
+// saved speed preference. Empty retains the native CLI's behavior.
+type SessionServiceTierDefault interface {
+	DefaultSessionServiceTier() string
+}
+
 // SessionServiceTierSupport advertises per-conversation speed controls without
 // starting an agent. A supported session implements SessionServiceTierController.
 type SessionServiceTierSupport interface {

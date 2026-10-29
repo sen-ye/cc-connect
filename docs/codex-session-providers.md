@@ -17,6 +17,27 @@ timer 复用会话时也使用目标会话的绑定。
 先 `/new` 再选择。原会话的 session ID 和历史保留。绑定的配置被删除或恢复失败时，
 不会静默改用其他 key，也不会因为恢复失败而自动开一个空白对话。
 
+## 会话模型与 Fast
+
+在已经绑定工作目录的新话题里，逐条发送：
+
+```text
+/provider switch OpenAI
+/model switch gpt-6.1-sol
+/reasoning ultra
+/fast status
+```
+
+`/model` 和模型卡片选择按会话保存，优先于 provider 的 `model` 默认值；不改变其他
+话题或 provider 默认配置。更换模型保留原生 session ID、历史和 Fast 设置，下一次
+启动或恢复时使用所选模型。`/model` 菜单与 reasoning 档位列表读取当前会话的模型。
+
+app_server 后端的新会话默认关闭 Fast，即使 Codex CLI 配置开启了 Fast。
+`/fast on` 显式开启，`/fast off` 关闭；设置在后续轮次、timer 和重启恢复时沿用。
+已有显式 Fast 设置保持不变，未保存档位的会话下次启动采用默认档位。
+可在 `[projects.agent.options]` 设置 `default_service_tier = "default"`（默认值）
+或 `"fast"` 调整未设置档位的会话；不会改写原生 CLI 全局配置。
+
 ## 网关切换账号后的加密 reasoning 恢复
 
 对于可能在后端账号之间路由的 Responses 网关，可以为单个 provider 启用：

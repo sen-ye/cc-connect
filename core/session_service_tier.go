@@ -11,6 +11,19 @@ func (s *Session) GetServiceTier() string {
 	return s.ServiceTier
 }
 
+// Caller holds session.settingsMu, as with an explicit /fast selection.
+func ensureSessionServiceTier(agent Agent, sessions *SessionManager, session *Session) error {
+	if session.GetServiceTier() != "" {
+		return nil
+	}
+	if defaults, ok := agent.(SessionServiceTierDefault); ok {
+		if tier := defaults.DefaultSessionServiceTier(); tier != "" {
+			return sessions.setSessionServiceTier(session, tier)
+		}
+	}
+	return nil
+}
+
 // The caller holds session.settingsMu. Holding the manager lock prevents other
 // snapshots from persisting a tentative setting if the write fails.
 func (sm *SessionManager) setSessionServiceTier(session *Session, tier string) error {
@@ -86,6 +99,10 @@ func (e *Engine) cmdFast(p Platform, msg *Message, args []string) {
 	}
 	e.interactiveMu.Unlock()
 	defer session.settingsMu.Unlock()
+	if err := ensureSessionServiceTier(agent, sessions, session); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgFastChangeFailed, err))
+		return
+	}
 	if action == "status" {
 		e.replyFastStatus(p, msg, session, controller)
 		return

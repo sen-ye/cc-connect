@@ -40,6 +40,8 @@ type Session struct {
 	// ProviderBound distinguishes a pinned CLI default (empty ActiveProvider)
 	// from a legacy session that has not selected a provider yet.
 	ProviderBound bool `json:"provider_bound,omitempty"`
+	// Explicit /model choice for agents supporting isolated session models.
+	ModelOverride string `json:"model_override,omitempty"`
 	// Empty inherits the agent default; "default" explicitly disables Fast.
 	ServiceTier string         `json:"service_tier,omitempty"`
 	History     []HistoryEntry `json:"history"`
@@ -839,6 +841,7 @@ func (sm *SessionManager) saveLockedWithError() error {
 			AgentType:           s.AgentType,
 			ActiveProvider:      s.ActiveProvider,
 			ProviderBound:       s.ProviderBound,
+			ModelOverride:       s.ModelOverride,
 			ServiceTier:         s.ServiceTier,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
 			History:             append([]HistoryEntry(nil), s.History...),

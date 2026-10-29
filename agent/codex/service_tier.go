@@ -14,6 +14,19 @@ func (a *Agent) SupportsSessionServiceTier() bool {
 	return a.backend == "app_server"
 }
 
+// Bridge conversations start in standard mode even if the CLI defaults to Fast.
+func (a *Agent) DefaultSessionServiceTier() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.backend != "app_server" {
+		return ""
+	}
+	if a.defaultServiceTier != "" {
+		return a.defaultServiceTier
+	}
+	return "default"
+}
+
 func (s *appServerSession) applyReportedServiceTier(tier *string) {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()

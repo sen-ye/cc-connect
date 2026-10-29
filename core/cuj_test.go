@@ -2198,6 +2198,7 @@ func TestCUJ_F1_ProviderSwitchLinkedToAgent(t *testing.T) {
 
 // CUJ-F2 · /model switches model — same pattern as F1, agent-managed.
 func TestCUJ_F2_ModelSwitchLinkedToAgent(t *testing.T) {
+	t.Run("ProviderModelAndFastSurviveRestart", sessionModelAndFastCUJ)
 	t.Log("CUJ-F2: model switching is per-agent; covered by agent/*_test.go model tests")
 }
 

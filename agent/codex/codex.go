@@ -33,25 +33,26 @@ func init() {
 //   - "full-auto": --sandbox workspace-write + approval_policy=never
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
-	workDir         string
-	model           string
-	reasoningEffort string
-	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
-	backend         string // "exec" | "app_server"
-	appServerURL    string
-	codexHome       string
-	systemPrompt    string
-	appendPrompt    string
-	cmd             string   // explicit CLI command; empty enables discovery
-	cliExtraArgs    []string // extra args parsed from cmd after the binary
-	providers       []core.ProviderConfig
-	activeIdx       int      // -1 = no provider set
-	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
-	sessionEnv      []string
-	mu              sync.RWMutex
-	reasoningMu     sync.Mutex
-	reasoningCache  reasoningMetadataCache
-	autoRetry       autoRetryPolicy
+	workDir            string
+	model              string
+	reasoningEffort    string
+	defaultServiceTier string
+	mode               string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	backend            string // "exec" | "app_server"
+	appServerURL       string
+	codexHome          string
+	systemPrompt       string
+	appendPrompt       string
+	cmd                string   // explicit CLI command; empty enables discovery
+	cliExtraArgs       []string // extra args parsed from cmd after the binary
+	providers          []core.ProviderConfig
+	activeIdx          int      // -1 = no provider set
+	configEnv          []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
+	sessionEnv         []string
+	mu                 sync.RWMutex
+	reasoningMu        sync.Mutex
+	reasoningCache     reasoningMetadataCache
+	autoRetry          autoRetryPolicy
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -67,6 +68,10 @@ func New(opts map[string]any) (core.Agent, error) {
 	codexHome, _ := opts["codex_home"].(string)
 	systemPrompt, _ := opts["system_prompt"].(string)
 	appendPrompt, _ := opts["append_system_prompt"].(string)
+	defaultTier, _ := opts["default_service_tier"].(string)
+	if defaultTier != "" && defaultTier != "default" && defaultTier != "fast" {
+		return nil, fmt.Errorf("codex: invalid default_service_tier %q", defaultTier)
+	}
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 	appServerURL = normalizeAppServerURL(appServerURL)
@@ -105,20 +110,21 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
-		autoRetry:       autoRetry,
-		workDir:         workDir,
-		model:           model,
-		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
-		mode:            mode,
-		backend:         backend,
-		appServerURL:    appServerURL,
-		codexHome:       strings.TrimSpace(codexHome),
-		systemPrompt:    strings.TrimSpace(systemPrompt),
-		appendPrompt:    strings.TrimSpace(appendPrompt),
-		cmd:             cmd,
-		cliExtraArgs:    cliExtraArgs,
-		configEnv:       configEnv,
-		activeIdx:       -1,
+		autoRetry:          autoRetry,
+		defaultServiceTier: defaultTier,
+		workDir:            workDir,
+		model:              model,
+		reasoningEffort:    normalizeReasoningEffort(reasoningEffort),
+		mode:               mode,
+		backend:            backend,
+		appServerURL:       appServerURL,
+		codexHome:          strings.TrimSpace(codexHome),
+		systemPrompt:       strings.TrimSpace(systemPrompt),
+		appendPrompt:       strings.TrimSpace(appendPrompt),
+		cmd:                cmd,
+		cliExtraArgs:       cliExtraArgs,
+		configEnv:          configEnv,
+		activeIdx:          -1,
 	}, nil
 }
 
@@ -194,7 +200,7 @@ func (a *Agent) WorkspaceAgentOptionSnapshot() map[string]any {
 	opts := map[string]any{
 		"backend": a.backend, "app_server_url": a.appServerURL,
 		"codex_home": a.codexHome, "model": a.model, "mode": a.mode,
-		"reasoning_effort": a.reasoningEffort, "system_prompt": a.systemPrompt,
+		"reasoning_effort": a.reasoningEffort, "default_service_tier": a.defaultServiceTier, "system_prompt": a.systemPrompt,
 		"append_system_prompt": a.appendPrompt, "env": env,
 	}
 	a.autoRetry.addOptions(opts)
@@ -507,16 +513,31 @@ func (a *Agent) SetSessionEnv(env []string) {
 }
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
-	return a.startSession(ctx, sessionID, nil)
+	return a.startSession(ctx, sessionID, nil, "")
 }
 
 // StartSessionWithProvider snapshots a conversation's binding without changing
 // the default provider shared by other conversations.
 func (a *Agent) StartSessionWithProvider(ctx context.Context, sessionID, providerName string) (core.AgentSession, error) {
-	return a.startSession(ctx, sessionID, &providerName)
+	return a.startSession(ctx, sessionID, &providerName, "")
 }
 
-func (a *Agent) startSession(ctx context.Context, sessionID string, providerName *string) (core.AgentSession, error) {
+func (a *Agent) StartSessionWithModel(ctx context.Context, sessionID, providerName, model string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, &providerName, model)
+}
+
+func (a *Agent) ModelForProvider(name string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, p := range a.providers {
+		if p.Name == name && p.Model != "" {
+			return p.Model
+		}
+	}
+	return a.model
+}
+
+func (a *Agent) startSession(ctx context.Context, sessionID string, providerName *string, modelOverride string) (core.AgentSession, error) {
 	a.mu.Lock()
 	provider, err := a.sessionProviderLocked(providerName)
 	if err != nil {
@@ -547,6 +568,9 @@ func (a *Agent) startSession(ctx context.Context, sessionID string, providerName
 			model = provider.Model
 		}
 		provName = provider.Name
+	}
+	if modelOverride != "" {
+		model = modelOverride
 	}
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.Unlock()

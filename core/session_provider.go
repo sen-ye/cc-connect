@@ -10,6 +10,9 @@ import (
 func startAgentSession(ctx context.Context, agent Agent, session *Session, sessions *SessionManager, resumeID string) (AgentSession, error) {
 	session.settingsMu.Lock()
 	defer session.settingsMu.Unlock()
+	if err := ensureSessionServiceTier(agent, sessions, session); err != nil {
+		return nil, err
+	}
 	var started AgentSession
 	var err error
 	if starter, ok := agent.(SessionProviderStarter); ok {
@@ -23,7 +26,11 @@ func startAgentSession(ctx context.Context, agent Agent, session *Session, sessi
 		if changed {
 			sessions.Save()
 		}
-		started, err = starter.StartSessionWithProvider(ctx, resumeID, name)
+		if models, ok := agent.(SessionModelStarter); ok {
+			started, err = models.StartSessionWithModel(ctx, resumeID, name, session.GetModelOverride())
+		} else {
+			started, err = starter.StartSessionWithProvider(ctx, resumeID, name)
+		}
 	} else {
 		restoreActiveProviderFromSession(agent, session)
 		started, err = agent.StartSession(ctx, resumeID)
