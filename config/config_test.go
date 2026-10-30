@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1680,6 +1681,9 @@ func TestEnsureProjectWithFeishuPlatform_CreatesMissingProject(t *testing.T) {
 	if len(proj.Platforms) != 1 {
 		t.Fatalf("len(proj.Platforms) = %d, want 1", len(proj.Platforms))
 	}
+	if proj.Platforms[0].Options["thread_isolation"] != true {
+		t.Fatal("new Lark bot would merge distinct topics")
+	}
 	if proj.Platforms[0].Type != "lark" {
 		t.Fatalf("platform type = %q, want %q", proj.Platforms[0].Type, "lark")
 	}
@@ -1710,6 +1714,9 @@ func TestEnsureProjectWithFeishuPlatform_AddsPlatformWhenProjectExistsWithoutFei
 	proj := cfg.Projects[0]
 	if len(proj.Platforms) != 2 {
 		t.Fatalf("len(proj.Platforms) = %d, want 2", len(proj.Platforms))
+	}
+	if proj.Platforms[1].Options["thread_isolation"] != true {
+		t.Fatal("new Feishu platform would merge distinct topics")
 	}
 	if proj.Platforms[1].Type != "feishu" {
 		t.Fatalf("platform type = %q, want %q", proj.Platforms[1].Type, "feishu")
@@ -3603,5 +3610,64 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 	refs2 := cfg.Projects[1].Agent.ProviderRefs
 	if len(refs2) != 0 {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
+	}
+}
+
+// Regression: newly created bots used chat+user keys, so /workspace in one
+// topic redirected subsequent messages and /ps from another topic.
+func TestAddPlatformToProject_FeishuTopicsIsolatedByDefault(t *testing.T) {
+	for _, platformType := range []string{"feishu", "lark", "slack"} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/explicit_false_%v", platformType, explicit), func(t *testing.T) {
+				configPath := writeConfigFixture(t, feishuConfigFixture)
+				patchConfigPath(t, configPath)
+				options := map[string]any{}
+				if explicit {
+					options["thread_isolation"] = false
+				}
+				err := AddPlatformToProject("topic-bot", PlatformConfig{Type: platformType, Options: options}, t.TempDir(), "cursor")
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := readConfigFixture(t, configPath)
+				got := cfg.Projects[len(cfg.Projects)-1].Platforms[0].Options
+				want := any(true)
+				if explicit {
+					want = false
+				} else if platformType == "slack" {
+					want = nil
+				}
+				if got["thread_isolation"] != want {
+					t.Fatalf("thread_isolation=%v, want %v", got["thread_isolation"], want)
+				}
+				if !explicit && len(options) != 0 {
+					t.Fatal("modified caller-owned options")
+				}
+			})
+		}
+	}
+}
+
+func TestEnsureProjectWithFeishuPlatform_PreservesExistingIsolationChoice(t *testing.T) {
+	for _, setting := range []string{"", "thread_isolation = false", "thread_isolation = true"} {
+		t.Run(setting, func(t *testing.T) {
+			raw := "[[projects]]\nname = \"existing\"\n[projects.agent]\ntype = \"cursor\"\n[[projects.platforms]]\ntype = \"feishu\"\n[projects.platforms.options]\n" + setting + "\n"
+			filename := writeConfigFixture(t, raw)
+			patchConfigPath(t, filename)
+			before, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := EnsureProjectWithFeishuPlatform(EnsureProjectWithFeishuOptions{ProjectName: "existing"}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("silently changed an existing bot's session scope")
+			}
+		})
 	}
 }

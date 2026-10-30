@@ -120,6 +120,8 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 
 > 如果应用没有交互卡片权限，或后台未配置卡片回调，可将 `enable_feishu_card = false`，让所有命令统一走纯文本回复，避免卡片发送失败后用户看不到内容。
 > 如果开启 `thread_isolation = true`，群聊里每个根消息 / reply thread 会对应一个独立 agent session；私聊行为保持原样。
+> CLI 引导和管理界面新建飞书/Lark 接入时会写入 `thread_isolation = true`；已有配置及显式设置的 `false` 保持原样。手工配置多话题机器人时也应显式开启，否则同群同用户的不同话题会共用 session，`/workspace` 会改到群级绑定，`/ps` 和 `/stop` 也可能影响另一个话题。
+> 已运行过且未开启隔离的机器人，升级配置时须同时核对原生 session ID：停服后为各话题写入独立 workspace binding，并将原 session 关联到相应的 `平台:群:root:根消息ID`。只改开关会生成新会话键，不能自动识别旧的混合历史属于哪个话题；不要把同一份旧原生会话无差别绑定到多个新话题。
 > `group_chat_history_share = true` 时，cc-connect 只在内存中保留当前进程观察到的、允许访问的群聊 text/post 消息，并在下一次明确 @ 机器人且真正进入 agent turn 时注入；未 @ 的消息不会触发回复。`/status` 等由 cc-connect 处理的命令不会消费这段待处理上下文，`/new` 会清空对应主频道或话题的上下文。
 > 在 multi-workspace 模式下，`thread_isolation = true` 也会让每个话题独立绑定 workspace；在话题内执行 `/workspace bind <name>` 不会影响同群的其他话题。已有的群级 binding 会保留为默认值，由尚未显式绑定的话题继承，因此回退到旧版本时仍可使用。
 > `progress_style = "compact"` 会把思考/工具进度合并到一条可更新消息里，减少刷屏；`legacy` 保持原有逐条发送；`card` 会使用结构化卡片（标题 + 进度块）持续更新同一条消息，观感比纯文本更清晰。

@@ -2025,7 +2025,7 @@ func EnsureProjectWithFeishuPlatform(opts EnsureProjectWithFeishuOptions) (*Ensu
 			block = append(block, "[[projects.platforms]]")
 			block = append(block, fmt.Sprintf("type = %s", quoteTomlString(platformType)))
 			block = append(block, "")
-			block = append(block, "[projects.platforms.options]")
+			block = append(block, "[projects.platforms.options]", "thread_isolation = true")
 			if insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
 				block = append(block, "")
 			}
@@ -2082,7 +2082,7 @@ func EnsureProjectWithFeishuPlatform(opts EnsureProjectWithFeishuOptions) (*Ensu
 	lines = append(lines, "[[projects.platforms]]")
 	lines = append(lines, fmt.Sprintf("type = %s", quoteTomlString(platformType)))
 	lines = append(lines, "")
-	lines = append(lines, "[projects.platforms.options]")
+	lines = append(lines, "[projects.platforms.options]", "thread_isolation = true")
 	if err := writeRawConfig(joinConfigLines(lines, hadTrailing)); err != nil {
 		return nil, err
 	}
@@ -3752,8 +3752,13 @@ func AddPlatformToProject(projectName string, platform PlatformConfig, workDir, 
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
-	if platform.Options == nil {
-		platform.Options = map[string]any{}
+	// Newly provisioned Feishu/Lark bots must not combine distinct topics.
+	// Existing configurations and explicit shared-session choices are untouched.
+	platform.Options = cloneAnyMap(platform.Options)
+	if strings.EqualFold(platform.Type, "feishu") || strings.EqualFold(platform.Type, "lark") {
+		if _, explicit := platform.Options["thread_isolation"]; !explicit {
+			platform.Options["thread_isolation"] = true
+		}
 	}
 	for i := range cfg.Projects {
 		if cfg.Projects[i].Name == projectName {
