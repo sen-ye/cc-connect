@@ -409,7 +409,12 @@ func TestAppServerSession_ReadLoopHandlesLargeResponseLine(t *testing.T) {
 		if decoded.Thread.ID != "thread-large" {
 			t.Fatalf("thread id = %q, want thread-large", decoded.Thread.ID)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
+		// The budget is for a hung read loop, not for machine speed: what this
+		// asserts is that readJSONLines has no 64 KB scanner cap, and decoding
+		// 11 MB on a loaded CI runner can take far longer than the 2 s it used
+		// to allow (2026-10-29: it timed out there while green on every local
+		// run and on the CI re-run of the same commit).
 		t.Fatal("timed out waiting for large response")
 	}
 
@@ -776,12 +781,25 @@ func TestAppServerSession_IgnoresSubagentIdle(t *testing.T) {
 		"status": {"type": "idle"}
 	}`))
 
+	select {
+	case ev := <-s.events:
+		t.Fatalf("unexpected event from parent idle before turn completion: %#v", ev)
+	default:
+	}
+	if got := appServerCurrentTurn(s); got != "parent-turn" {
+		t.Fatalf("currentTurn after parent idle = %q, want parent-turn", got)
+	}
+
+	s.handleNotification("turn/completed", json.RawMessage(`{
+		"threadId": "parent-thread",
+		"turn": {"id": "parent-turn", "status": "completed"}
+	}`))
 	ev := <-s.events
 	if ev.Type != core.EventResult || !ev.Done {
-		t.Fatalf("parent idle event = %#v, want EventResult Done", ev)
+		t.Fatalf("parent completion event = %#v, want EventResult Done", ev)
 	}
 	if s.currentTurn != "" {
-		t.Fatalf("currentTurn after parent idle = %q, want empty", s.currentTurn)
+		t.Fatalf("currentTurn after parent completion = %q, want empty", s.currentTurn)
 	}
 }
 

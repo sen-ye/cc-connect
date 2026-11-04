@@ -568,6 +568,7 @@ type interactiveState struct {
 	mu                       sync.Mutex
 	stopCh                   chan struct{}
 	stopped                  bool
+	turnCancelled            bool // set when a graceful ACP CancelTurn aborted the live turn
 	pending                  *pendingPermission
 	pendingUserInput         *pendingUserInput
 	pendingMessages          []queuedMessage // messages queued while session was busy
@@ -3669,7 +3670,9 @@ found:
 		}); err != nil {
 			slog.Error("failed to send permission response", "error", err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
+		} else if _, hasButtons := p.(InlineButtonSender); !hasButtons {
+			// Platforms with native inline buttons already acknowledge the click
+			// client-side (visited state); an extra text confirmation is noise.
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionAllowed))
 		}
 	} else if isDenyResponse(lower) {
@@ -4075,7 +4078,8 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.currentMessageID = msg.MessageID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
-	as := state.agentSession // capture under lock to avoid race with cleanup
+	state.turnCancelled = false // cancellation belongs to the previous turn
+	as := state.agentSession    // capture under lock to avoid race with cleanup
 	state.mu.Unlock()
 
 	// Run Send concurrently with processInteractiveEvents. Some agents block inside
@@ -6248,6 +6252,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// Mark clean exit so unsolicited reader preserves buffered events.
 			state.mu.Lock()
 			state.eventsNeedResync = false
+			cancelled := state.turnCancelled
+			state.turnCancelled = false
+			stopped := state.stopped
 			state.mu.Unlock()
 
 			fullResponse := event.Content
@@ -6263,7 +6270,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				fullResponse = strings.Join(textParts, "")
 			}
 			if fullResponse == "" {
-				fullResponse = e.i18n.T(MsgEmptyResponse)
+				if cancelled || stopped {
+					// User-aborted/cancelled mid-turn with no agent output: stay silent —
+					// the /stop ack already told the user. Reuses the NO_REPLY
+					// silent-delivery path so no "(empty response)" noise is sent.
+					fullResponse = "NO_REPLY"
+				} else {
+					fullResponse = e.i18n.T(MsgEmptyResponse)
+				}
 			}
 
 			// Strip any agent-self-reported "[ctx: ~XX%]" marker so it does not
@@ -7691,12 +7705,8 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 	e.cleanupInteractiveState(interactiveKey)
 	slog.Info("cmdNew: cleanup done, creating new session", "session_key", msg.SessionKey)
 
-	// Clear old session's agent session ID so it cannot be resumed
-	old := sessions.GetOrCreateActive(msg.SessionKey)
-	old.SetAgentSessionID("", "")
-	old.ClearHistory()
-	sessions.Save()
-
+	// NewSession creates a separate conversation. Keep the old native ID,
+	// history and settings so /switch can restore its original provider.
 	name := ""
 	if len(args) > 0 {
 		name = strings.Join(args, " ")
@@ -11063,6 +11073,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		// the cancelled turn before processing fresh input.
 		state.mu.Lock()
 		state.eventsNeedResync = true
+		state.turnCancelled = true
 		state.mu.Unlock()
 
 		cancelErr := canceller.CancelTurn()

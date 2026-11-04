@@ -500,6 +500,7 @@ func (env *cujEnv) activeSession(sessionKey string) *Session {
 // ===========================================================================
 
 func TestCUJ_B3_SwitchPreservesHistoryEndToEnd(t *testing.T) {
+	t.Run("NewSwitchPreservesProviderAndHistory", testCUJNewSwitchProvider)
 	env := newCUJEnv(t)
 	key := "test:alice"
 
@@ -558,6 +559,46 @@ func TestCUJ_B3_SwitchPreservesHistoryEndToEnd(t *testing.T) {
 	if !foundUserMsg {
 		t.Fatalf("history after switch back is missing the original user message. Got: %+v", got)
 	}
+}
+
+type cujProviderListAgent struct{ *providerBindingTestAgent }
+
+func (*cujProviderListAgent) ListSessions(context.Context) ([]AgentSessionInfo, error) {
+	return []AgentSessionInfo{{ID: "native-key-a-1", Summary: "first provider task"}}, nil
+}
+
+func testCUJNewSwitchProvider(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	a := &cujProviderListAgent{newProviderBindingTestAgent("key-a")}
+	e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: p}
+	const key = "test:provider-switch"
+	send := func(content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: p.Name(), UserID: "provider-switch", Content: content, ReplyCtx: "ctx"})
+	}
+	send("first provider task")
+	env.waitFor("first provider reply", 2*time.Second, func() bool {
+		return env.sentContains("API=key-a") && !e.sessions.GetOrCreateActive(key).Busy()
+	})
+	send("/new")
+	send("/provider switch key-b")
+	p.clearSent()
+	send("second provider task")
+	env.waitFor("second provider reply", 2*time.Second, func() bool {
+		return env.sentContains("API=key-b") && !e.sessions.GetOrCreateActive(key).Busy()
+	})
+	send("/switch native-key-a-1")
+	p.clearSent()
+	send("resume first provider task")
+	env.waitFor("original provider restored", 2*time.Second, func() bool {
+		return env.sentContains("API=key-a session=native-key-a-1") && !e.sessions.GetOrCreateActive(key).Busy()
+	})
+	p.clearSent()
+	send("/history")
+	env.waitFor("original history preserved", 2*time.Second, func() bool {
+		return env.sentContains("first provider task")
+	})
 }
 
 // ===========================================================================
@@ -1825,6 +1866,7 @@ func TestCUJ_C2_PlanModeRequiresApproval(t *testing.T) {
 
 // CUJ-C5 · /stop halts current turn but DOES NOT switch session.
 func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
+	t.Run("CancelledPartialReplyDoesNotSilenceNextTurn", testCUJCancelledPartialReply)
 	env := newCUJEnv(t)
 	key := "test:c5"
 	env.userSends("c5", "hello")
@@ -1838,6 +1880,55 @@ func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
 	if env.activeSession(key).ID != oldID {
 		t.Fatalf("/stop changed active session %s → %s; should stay on same session", oldID, env.activeSession(key).ID)
 	}
+}
+
+type cujCancelReplySession struct {
+	stubAgentSession
+	events  chan Event
+	started chan struct{}
+}
+
+func (s *cujCancelReplySession) Events() <-chan Event { return s.events }
+
+func (s *cujCancelReplySession) Send(prompt, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	if strings.Contains(prompt, "held task") {
+		close(s.started)
+		return nil
+	}
+	s.events <- Event{Type: EventResult, Done: true}
+	return nil
+}
+
+func (s *cujCancelReplySession) CancelTurn() error {
+	s.events <- Event{Type: EventResult, Content: "partial answer before cancellation", Done: true}
+	return nil
+}
+
+func testCUJCancelledPartialReply(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	s := &cujCancelReplySession{events: make(chan Event, 4), started: make(chan struct{})}
+	e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: p}
+	const key = "test:cancel-reply"
+	send := func(content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: p.Name(), UserID: "cancel-reply", Content: content, ReplyCtx: "ctx"})
+	}
+	send("held task")
+	select {
+	case <-s.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not start")
+	}
+	send("/stop")
+	env.waitFor("cancelled partial reply", 2*time.Second, func() bool {
+		return env.sentContains("partial answer before cancellation") && !e.sessions.GetOrCreateActive(key).Busy()
+	})
+	p.clearSent()
+	send("next task with an empty answer")
+	env.waitFor("new turn reports its own empty result", 2*time.Second, func() bool {
+		return env.sentContains(e.i18n.T(MsgEmptyResponse))
+	})
 }
 
 // CUJ-C6 · /mode switches permission mode; verified via i18n reply text.
