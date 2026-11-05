@@ -54,6 +54,100 @@ func scopedTestEvent(t *testing.T, s *claudeSession) core.Event {
 	}
 }
 
+func TestSubagentEvents_DoNotLeakOrOverwriteParentState(t *testing.T) {
+	children := map[string]string{
+		"assistant":         `{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":90000},"content":[{"type":"text","text":"child-only draft"},{"type":"thinking","thinking":"child-only reasoning"},{"type":"tool_use","name":"Bash","input":{"command":"child-only command"}}]}}`,
+		"user":              `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Stop hook feedback: child-only feedback"},{"type":"tool_result","content":"child-only tool output","is_error":true}]}}`,
+		"system":            `{"type":"system","subtype":"init","model":"child-model","session_id":"child-session"}`,
+		"result":            `{"type":"result","subtype":"success","result":"child-only final","session_id":"child-session","user_message_uuid":"INPUT_UUID","modelUsage":{"child-model":{"contextWindow":1000000}}}`,
+		"command_lifecycle": `{"type":"command_lifecycle","command_uuid":"INPUT_UUID","state":"cancelled"}`,
+	}
+	for name, line := range children {
+		t.Run(name, func(t *testing.T) {
+			s, input := scopedTestSession()
+			id := sendScopedTestMessage(t, s, input, "parent-request")
+			s.handleReadLoopLine(`{"type":"system","subtype":"init","model":"parent-model","session_id":"test-session"}`)
+			_ = scopedTestEvent(t, s)
+			s.handleReadLoopLine(`{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":100,"cache_read_input_tokens":300},"content":[{"type":"text","text":"parent progress"}]}}`)
+			if e := scopedTestEvent(t, s); e.Type != core.EventText || e.Content != "parent progress" {
+				t.Fatalf("parent progress = %+v", e)
+			}
+			before := *s.GetContextUsage()
+			line = strings.ReplaceAll(line, "INPUT_UUID", id)
+			line = strings.Replace(line, "{", `{"parent_tool_use_id":"parent-agent-call",`, 1)
+			s.handleReadLoopLine(line)
+			if len(s.events) != 0 {
+				t.Fatalf("child event leaked into the parent stream: %+v", scopedTestEvent(t, s))
+			}
+			if s.CurrentSessionID() != "test-session" || s.GetModel() != "parent-model" {
+				t.Fatalf("child overwrote parent identity: session=%q model=%q", s.CurrentSessionID(), s.GetModel())
+			}
+			if got := s.GetContextUsage(); !reflect.DeepEqual(*got, before) {
+				t.Fatalf("child overwrote parent usage: got %+v, want %+v", got, before)
+			}
+			s.handleResult(map[string]any{"type": "result", "result": "parent final", "user_message_uuid": id})
+			if e := scopedTestEvent(t, s); !e.Done || e.Background || e.Content != "parent final" {
+				t.Fatalf("child consumed the parent turn: %+v", e)
+			}
+		})
+	}
+}
+
+func TestSubagentEvents_KeepParentProgressAndBackgroundSummary(t *testing.T) {
+	for _, marker := range []string{"", `,"parent_tool_use_id":null`, `,"parent_tool_use_id":""`} {
+		t.Run(marker, func(t *testing.T) {
+			s, input := scopedTestSession()
+			id := sendScopedTestMessage(t, s, input, "parent-request")
+			s.handleReadLoopLine(`{"type":"assistant"` + marker + `,"message":{"role":"assistant","content":[{"type":"text","text":"parent progress"},{"type":"thinking","thinking":"parent reasoning"},{"type":"tool_use","name":"Agent","input":{"description":"delegate a task"}}]}}`)
+			for _, want := range []core.EventType{core.EventText, core.EventThinking, core.EventToolUse} {
+				if e := scopedTestEvent(t, s); e.Type != want {
+					t.Fatalf("parent event = %+v, want %s", e, want)
+				}
+			}
+			s.handleReadLoopLine(`{"type":"user"` + marker + `,"message":{"role":"user","content":[{"type":"tool_result","content":"parent received the delegated result"}]}}`)
+			if e := scopedTestEvent(t, s); e.Type != core.EventToolResult || e.ToolResult != "parent received the delegated result" {
+				t.Fatalf("parent tool result = %+v", e)
+			}
+			s.handleReadLoopLine(`{"type":"result"` + marker + `,"result":"parent final","user_message_uuid":"` + id + `"}`)
+			if e := scopedTestEvent(t, s); !e.Done || e.Background {
+				t.Fatalf("parent completion = %+v", e)
+			}
+			next := sendScopedTestMessage(t, s, input, "next-request")
+			s.handleReadLoopLine(`{"type":"assistant"` + marker + `,"message":{"role":"assistant","content":[{"type":"text","text":"parent background summary"}]}}`)
+			if e := scopedTestEvent(t, s); e.Type != core.EventText || e.Content != "parent background summary" {
+				t.Fatalf("background summary text = %+v", e)
+			}
+			s.handleReadLoopLine(`{"type":"result"` + marker + `,"result":"parent background summary","num_turns":1,"origin":{"kind":"task-notification"}}`)
+			if e := scopedTestEvent(t, s); !e.Done || !e.Background || e.Content != "parent background summary" {
+				t.Fatalf("background summary result = %+v", e)
+			}
+			s.handleResult(map[string]any{"type": "result", "result": "next final", "user_message_uuid": next})
+			if e := scopedTestEvent(t, s); !e.Done || e.Background || e.Content != "next final" {
+				t.Fatalf("background summary consumed the next request: %+v", e)
+			}
+		})
+	}
+}
+
+func TestSubagentEvents_KeepPermissionRequestsInteractive(t *testing.T) {
+	for _, tool := range []string{"Bash", "AskUserQuestion"} {
+		t.Run(tool, func(t *testing.T) {
+			s, input := scopedTestSession()
+			s.ccHooks = newCCPermissionHookRunner(t.TempDir())
+			s.handleReadLoopLine(`{"type":"control_request","parent_tool_use_id":"parent-agent-call","request_id":"child-permission","request":{"subtype":"can_use_tool","tool_name":"` + tool + `","input":{}}}`)
+			if e := scopedTestEvent(t, s); e.Type != core.EventPermissionRequest || e.RequestID != "child-permission" || e.ToolName != tool {
+				t.Fatalf("child permission request = %+v", e)
+			}
+			if err := s.RespondPermission("child-permission", core.PermissionResult{Behavior: "deny", Message: "denied in test"}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(input.String(), `"request_id":"child-permission"`) || !strings.Contains(input.String(), `"behavior":"deny"`) {
+				t.Fatalf("permission response was not sent to the CLI: %s", input.String())
+			}
+		})
+	}
+}
+
 func TestResultScope_ResumeNotificationDoesNotCompleteUserTurn(t *testing.T) {
 	s, input := scopedTestSession()
 	id := sendScopedTestMessage(t, s, input, "platform-message")

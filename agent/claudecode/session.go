@@ -726,6 +726,9 @@ func resultSubtype(raw map[string]any) string {
 }
 
 func (cs *claudeSession) handleSystem(raw map[string]any) {
+	if isSubagentEvent(raw) {
+		return
+	}
 	if model, ok := raw["model"].(string); ok && model != "" {
 		cs.activeModel.Store(model)
 	}
@@ -1062,6 +1065,9 @@ func asInt(v any) int {
 }
 
 func (cs *claudeSession) handleAssistant(raw map[string]any) {
+	if isSubagentEvent(raw) {
+		return
+	}
 	msg, ok := raw["message"].(map[string]any)
 	if !ok {
 		return
@@ -1156,6 +1162,9 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 }
 
 func (cs *claudeSession) handleUser(raw map[string]any) {
+	if isSubagentEvent(raw) {
+		return
+	}
 	msg, ok := raw["message"].(map[string]any)
 	if !ok {
 		return

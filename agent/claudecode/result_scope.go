@@ -57,7 +57,19 @@ func (cs *claudeSession) writeUserMessage(content any, messageID string) error {
 	return err
 }
 
+// Claude multiplexes subagent output on the parent stream. Its non-empty
+// parent_tool_use_id identifies child output, including nested subagents.
+// Missing, null and empty values belong to the parent. Control requests must
+// still be handled: dropping a child's permission request would stall its task.
+func isSubagentEvent(raw map[string]any) bool {
+	parent, _ := raw["parent_tool_use_id"].(string)
+	return parent != ""
+}
+
 func (cs *claudeSession) handleCommandLifecycle(raw map[string]any) {
+	if isSubagentEvent(raw) {
+		return
+	}
 	id, _ := raw["command_uuid"].(string)
 	state, _ := raw["state"].(string)
 	cs.turnMu.Lock()
@@ -124,7 +136,7 @@ func (cs *claudeSession) resultScope(raw map[string]any, intermediate bool) (bac
 	if historical || (id != "" && t.results[id]) {
 		return false, true
 	}
-	if child, _ := raw["parent_tool_use_id"].(string); child != "" {
+	if isSubagentEvent(raw) {
 		return false, true
 	}
 	ids := resultUserUUIDs(raw)
