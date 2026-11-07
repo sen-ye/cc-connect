@@ -276,3 +276,18 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 6. Optionally implement `AgentDoctorInfo` for `cc-connect doctor` support
 7. Add config example in `config.example.toml`
 8. Add unit tests
+
+## Local Codex Routing
+
+- 本机入口统一为 `codex-aidp`、`codex-openai`、`codex-maso`，默认 `--sandbox danger-full-access`；普通 `codex` 默认 AIDP。cc-connect 为 `AIDP`（默认）、`openai`、`maso`。原生配置中的 `OpenAI` 大写用于避开保留 ID，不是第四个 provider。见 [会话配置与入口](docs/codex-session-providers.md)。
+- 改名后恢复旧会话 → 保留原生 provider ID，以历史 ID 启动原生进程并传递 resume 请求；仅改请求参数不足以通过 Codex 的进程级检查。不得改写原生历史。测试须覆盖 `exec resume --json UUID` 和 app-server。
+- 本机共享 relay：AIDP `19617`，Maso `19618`；CSJ / SD / Codex Mojo 退役，Claude 自己的 Mojo 保留。仍须保留会话 affinity；旧加密 reasoning 是否可恢复受上游账号路由影响。
+
+## 当前维护状态（2026-11-08）
+
+- 当前线上二进制 `126cce62`（`v1.5.1-beta.4-senye.20261105-claude-subagents`），Claude 子 agent 事件隔离已于 11 月 5 日验证上线；本次仅调整 Python 启动器与配置，不重新构建桥接二进制。
+- 三 provider 配置与旧组件清理已准备，部署状态以 `/home/tiger/.cc-connect/deployments/provider-unification/deployment.json` 为准。独立 worker 等待本轮回复送达及会话空闲后切换，验证历史、provider/model/Fast、三个飞书连接与 Unix API。
+- 本轮测试、配置恢复包及 Git bundle 归档：`/mnt/hdfs/user_wl/senye.eason/exps/cc-connect/20261108-provider-unification/`。BN 主工作区发生 `Disk quota exceeded`，本机开发结果通过 bundle 保存待回写；恢复 BN 写入后先对照线上版本同步，避免覆盖已上线的 Claude 修复。机器迁移项目的旧启动脚本也待回写为新入口。
+- 旧 debug 会话 `01a0a053-ab00-78b3-a86f-0a860c674229` 使用原生 `csj` ID；通过 AIDP 的进程内别名恢复，保留原始历史。当前维护会话为 `codex_ws_ac72ee9f.json` 的 s3，原生 ID `01a1a489-07ed-70d0-a21c-8d0ff7de898a`。
+- Claude `/ps` 已送达但不答 → 查原生 `queue-operation` 与未返回的工具；串行下载可能占住主会话，消息入队不等于模型处理。11 月 4 日 simdata 会话已验证。
+- 定时任务修复 [PR #2146](https://github.com/chenhg5/cc-connect/pull/2146) 尚未核实最新合并状态。后续合上游须保留会话 provider/model/Fast 隔离、timer/cron 话题工作区与 Cursor ACP。上次同步见 [记录](docs/upstream-sync.md)。

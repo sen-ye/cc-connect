@@ -58,10 +58,14 @@ def main():
     parser.add_argument("--config", type=Path,
                         default=Path.home() / ".config/codex-provider/services.json")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--provider", choices=("AIDP", "openai", "maso"))
     args = parser.parse_args()
     try:
         config = json.loads(args.config.read_text())
+        wanted = {"AIDP": "aidp", "openai": None, "maso": "maso"}
         for service in config["services"]:
+            if args.provider and service["name"] != wanted[args.provider]:
+                continue
             ensure_service(config["binary"], service, args.check)
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         # Do not echo configuration contents or a subprocess environment.

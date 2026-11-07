@@ -22,7 +22,7 @@ timer 复用会话时也使用目标会话的绑定。
 在已经绑定工作目录的新话题里，逐条发送：
 
 ```text
-/provider switch OpenAI
+/provider switch openai
 /model switch gpt-6.1-sol
 /reasoning ultra
 /fast status
@@ -121,23 +121,48 @@ api-key = "GATEWAY_API_KEY"
 和 `--last` 不受支持；其他 provider 的历史请使用原入口恢复。此检查不会修改历史。
 终端 Ctrl-C 由原生 Codex 处理，不会因取消一轮任务而提前关闭代理。
 
-本机的 `codex-seed` 使用上述入口，凭据读取脚本为 `tools/codex-seed.py`：
+本机统一使用 `tools/codex_launcher.py`，对外只保留三个入口：
+
+| 命令 | cc-connect provider | 原生 provider ID |
+|---|---|---|
+| `codex-aidp`（`codex` 默认） | `AIDP`（默认） | `AIDP` |
+| `codex-openai` | `openai` | `OpenAI` |
+| `codex-maso` | `maso` | `maso` |
+
+小写 `openai` 是原生 Codex 的保留 ID，不能在 `model_providers` 中覆盖，所以原生配置
+使用 `OpenAI`；对外命令和 cc-connect 使用小写名称。三个专用入口默认传入
+`--sandbox danger-full-access` 和 `--no-daemon`；原生 `config.toml` 同时设置
+`sandbox_mode = "danger-full-access"`。用户显式指定 sandbox 时优先使用该值。
+这项默认设置不额外开启跳过审批。cc-connect 沿用原来的 `mode = "yolo"`。
 
 ```bash
-codex-seed                         # gpt-6-astra
-codex-seed -m es1-grape-g61s
-codex-seed resume SESSION_UUID
+codex-aidp
+codex-openai
+codex-maso -m es1-grape-g61s
+codex-maso resume SESSION_UUID
 ```
 
-脚本优先读取 `CC_CODE_ROUTER_API_KEY` / `SEED_CODE_ROUTER_API_KEY`，否则读取
-`~/.codex/code-router-auth.json`，不会将 key 写到 argv 或配置。独立配置、模型目录和
-固定 affinity 保存在 `~/.config/codex-seed/`，程序在 `~/.local/share/codex-seed/`。
-它与普通 Codex 共用原生历史和用户设置；全局默认 provider 保持不变。
+`~/.config/codex-provider/launcher.json` 维护原生程序路径、凭据文件引用、公司代理、
+Maso 模型目录和独立 CLI affinity。密钥仍分别保存在 `~/.codex/auth.json`、
+`~/.codex/openai-official-auth.json`、`~/.codex/maso-auth.json`，只通过环境传递。
+共享辅助程序安装于 `~/.local/share/codex-provider/`；三个命令与普通 `codex`
+都是该程序的链接。使用系统 Python 3.11 或更新版本。
+
+历史 `aidp` / `csj` 对应 AIDP，历史 `Seed` / `code_router` 对应 maso。
+明确传入 UUID 恢复时，启动器只在当前进程注入对应的旧原生 ID，不改写原生数据库或
+rollout。cc-connect 的 stdio 适配器在收到首个 `thread/resume` 后，以历史 ID 重新初始化尚未
+承载任务的原生进程，再提交恢复请求；只重放 initialize 握手，保留会话自己的代理和凭据。旧 SD / Mojo 已退役；其历史保留，但不再提供启动入口。
+
+配置迁移由 `tools/codex_reconfigure.py` 调用现有独立部署 worker：等待回复送达和
+会话空闲，停桥接服务，备份废弃组件，迁移 cc-connect 的 provider 元数据，再恢复服务。
+仅调整 provider 名称及绑定状态，验证原生 ID、消息历史、模型与 Fast 保留。
+当前启动入口是 `~/.cc-connect/start-codex.sh`（源码 `tools/start_cc_connect.sh`）；
+`start-migrated.sh` 指向该入口，已不依赖 CSJ / SD。
 
 Maso 在 `packages/utils/src/maso_utils/providers.py` 中通过带 Bearer 认证的
 `POST /cowork/api/v1/llm-configs` 取得配置，然后按协议和 endpoint 选择模型。
 该响应包括凭据，不应原样保存或输出。它不是 Codex 的标准 `/models` 目录；
-模型配置中的 high/xhigh/max 项是同一 model ID 的不同预设。本机 Seed 仅列出
+模型配置中的 high/xhigh/max 项是同一 model ID 的不同预设。本机 Maso 仅列出
 `gpt-6-astra` 和 `es1-grape-g61s`。后者的本地 CLI 元数据基于现有 GPT-6.1 Sol
 模板，实际请求保留 `es1-grape-g61s` 名称，不构成网关能力或上下文上限保证。
 
@@ -162,7 +187,7 @@ null 或空白时，才把首条 developer **消息**的纯文本复制到顶层
 该方法使用客户端为当前模型选择的指令，而非按名字猜测或给所有模型套 Astra 模板。
 它会重复放置这段指令，改变模型有效输入和 token 计量；不等同于已验证的能力提升。
 cc-connect 的 `system_prompt` 是用户消息前导，并不等同于这个 Responses 字段。
-显式 false 会在配置保存、管理 API 和工作区复制时保留；这些设置会随 provider 继承到工作区，也适用于 `codex-provider` / `codex-seed` 启动器。
+显式 false 会在配置保存、管理 API 和工作区复制时保留；这些设置会随 provider 继承到工作区，也适用于 `codex-provider` / `codex-maso` 启动器。
 
 ### 独立本地转发，覆盖普通 Codex CLI
 
@@ -187,16 +212,12 @@ codex-provider --config ./aidp-proxy.toml --listen 127.0.0.1:19617
 SSE 正文和端到端响应头直接转发，429 / Retry-After 不改写成别的错误码。
 这不会延长 ModelHub 的账号粘性或厂商缓存寿命，也不能保证跨账号解密。
 
-本机的 `ensure-codex-proxies`（源码 `tools/ensure_codex_proxies.py`）按
-`~/.config/codex-provider/services.json` 幂等启动独立 tmux 服务；`--check` 只检查健康。
-健康检查核对服务名称；不会替换已有但不健康的会话，也不会自动切换上游。
-启动器在 tmux pane 内清空继承环境，鉴权始终由每个 HTTP 请求携带。
-普通 `codex` wrapper 与机器启动脚本调用此辅助程序，relay 生命周期独立于 cc-connect。
-`codex-seed` 仍使用自己的进程内代理；Mojo 在其网关的
-`upstreams.mojo-native.mirror_developer_instructions` 配置对应功能。
-
-本次四个入口的实测、Sub2API 模板来源与上线范围见
-[provider 指令对照](incidents/2026-10-28-provider-instructions.md)。
+本机 AIDP 和 Maso 分别通过 `127.0.0.1:19617`、`127.0.0.1:19618` 的常驻
+`codex-provider --listen` 代理处理指令；Maso 共享代理同时保留加密 reasoning 恢复。
+OpenAI 使用其配置的公司网络代理。relay 生命周期独立于 cc-connect，启动器在 tmux
+pane 内清空继承环境，请求鉴权由调用方携带。
+`tools/ensure_codex_proxies.py --provider AIDP|openai|maso` 只启动对应的 relay；
+OpenAI 不需要本机 relay。省略 `--provider` 时维护注册表中的 AIDP 和 Maso 两项。
 
 ## 共享入口的同 key 限流冷却
 
@@ -242,7 +263,7 @@ auto_retry_max_delay_seconds = 32
 会相应降低；服务端等待要求可能使预算更早耗尽。成功推进后的清零规则保持一致。
 
 此项只影响 cc-connect `app_server` 整轮失败后的自动续跑，不调整原生 Codex 的 HTTP/
-sampling 重试，也不为 `codex-seed` 增加一个额外重试循环。内层仍可根据上游的
+sampling 重试，也不为 `codex-maso` 增加一个额外重试循环。内层仍可根据上游的
 `Retry-After` 等待更久。若内层最终失败时剩余的服务端最短等待超过该 provider 的
 上限，cc-connect 提示等待而不提前请求。详情见
 [Seed 并发与重试记录](incidents/2026-10-29-seed-retry-and-concurrency.md)。
@@ -269,7 +290,7 @@ turn 中已完成的有效模型文本或成功工具结果后，连续重试次
 下次故障从第 1 次、2 秒开始。同一任务中恢复工作后再次故障不会沿用之前的次数。
 仅开始续跑、思考片段、空输出、失败工具、子 agent 或旧 turn 的事件不会清零。
 完整 turn 成功或下一条用户任务也会清零；已有 `max_turn_time_mins` 仍然有效。
-独立交互终端 `codex-seed` 不使用这套 cc-connect 会话层续跑机制。
+独立交互终端 `codex-maso` 不使用这套 cc-connect 会话层续跑机制。
 
 ## 每条会话独立设置 Fast
 
@@ -331,7 +352,7 @@ model_catalog_url = "https://api-b.example/v1/models"
 已有全局 `[[providers]]` 和 `provider_refs` 同样可以使用上述 Codex 字段。
 
 若 API 中转需要从进程环境读取固定会话标识，可以增加请求头映射。例如，已有启动脚本
-提供 `AIDP_SESSION_ID` 时，CSJ proxy 配置可以使用：
+提供 `AIDP_SESSION_ID` 时，AIDP 配置可以使用：
 
 ```toml
 [projects.agent.providers.codex.env_http_headers]
